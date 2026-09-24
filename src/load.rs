@@ -1,4 +1,4 @@
-//! 多文件分层加载：优先级从左到右递增（最右覆盖左侧）。
+//! Layered multi-file loading: precedence increases left to right (rightmost wins).
 
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ pub struct Entry {
 #[derive(Default)]
 pub struct Loaded {
     pub entries: Vec<Entry>,
-    /// (变量名, 被覆盖的文件, 生效的文件)
+    /// (variable name, overridden file, winning file)
     pub overrides: Vec<(String, PathBuf, PathBuf)>,
     pub files: Vec<PathBuf>,
     pub missing: Vec<PathBuf>,
@@ -37,13 +37,13 @@ impl Loaded {
     }
 }
 
-/// `explicit` 为 false 表示走的是默认 `.env`：缺文件只警告不报错。
+/// `explicit` false means we fell back to the default `.env`: a missing file only warns.
 pub fn load_files(sess: &mut Session, paths: &[PathBuf], explicit: bool) -> Result<Loaded> {
     let mut out = Loaded::default();
     for path in paths {
         if !path.exists() {
             if explicit {
-                bail!("找不到文件: {}", path.display());
+                bail!("file not found: {}", path.display());
             }
             out.missing.push(path.clone());
             continue;
@@ -90,7 +90,7 @@ pub fn default_paths(files: &[PathBuf]) -> (Vec<PathBuf>, bool) {
     }
 }
 
-/// 极简 glob：支持 `*` 与 `?`。
+/// Minimal glob: supports `*` and `?`.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
     fn go(p: &[char], t: &[char]) -> bool {
         match p.first() {

@@ -1,8 +1,9 @@
-//! 格式保持的 .env CST 解析器。
+//! Format-preserving .env CST parser.
 //!
-//! 重写文件时保留：注释、空行、变量顺序、引号风格、`export ` 前缀、行内注释。
-//! 因此这里不是「parse 成 map 再序列化」，而是把每一行原样留在 CST 里，
-//! 只对真正改动的变量行做最小化重写。
+//! Rewriting a file preserves comments, blank lines, variable order, quote style,
+//! the `export ` prefix and inline comments. So this is not "parse into a map and
+//! serialize back": every line is kept verbatim in the CST, and only the variable
+//! lines that actually changed are rewritten, minimally.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -16,10 +17,10 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// 无 `@localenvx-mode:` 标记时的默认：默认加密，安全的那一侧。
+    /// Default when no `@localenvx-mode:` tag is present: encrypt by default, the safe side.
     pub const DEFAULT: Mode = Mode::Blacklist;
 
-    /// 该模式下「无显式标记」的变量是否加密。
+    /// Whether variables without an explicit directive are encrypted in this mode.
     pub fn encrypts_by_default(self) -> bool {
         self == Mode::Blacklist
     }
@@ -56,13 +57,13 @@ pub enum Quote {
 #[derive(Clone, Debug)]
 pub struct Var {
     pub name: String,
-    /// 已解码的值（去引号、已反转义）。可能是 `encrypted:v1:...`。
+    /// The decoded value (unquoted, unescaped). May be `encrypted:v1:...`.
     pub value: String,
     pub quote: Quote,
     pub export: bool,
     indent: String,
     space_after_eq: String,
-    /// 行内注释等尾随内容，原样保留。
+    /// Trailing content such as an inline comment, kept verbatim.
     trailing: String,
 }
 
@@ -72,7 +73,7 @@ enum Line {
     Var(Var),
 }
 
-/// `Line` 的只读视图，把「空行」从「注释」里分出来，方便调用方渲染。
+/// Read-only view of a `Line`, splitting blank lines out of comments so callers can render them.
 pub enum Item<'a> {
     Blank,
     Comment(&'a str),
@@ -89,7 +90,7 @@ pub struct EnvFile {
 impl EnvFile {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
-            .with_context(|| format!("读取 {} 失败", path.display()))?;
+            .with_context(|| format!("failed to read {}", path.display()))?;
         Self::from_str_at(&text, path)
     }
 
@@ -125,7 +126,8 @@ impl EnvFile {
         Ok(f)
     }
 
-    /// 按文件顺序遍历每一行（含注释与空行）——UI 用它把 .env 原样渲染出来。
+    /// Iterate every line in file order (comments and blanks included) — the UI uses this
+    /// to render the .env exactly as written.
     pub fn items(&self) -> impl Iterator<Item = Item<'_>> {
         self.lines.iter().map(|l| match l {
             Line::Raw(raw) if raw.trim().is_empty() => Item::Blank,
@@ -151,7 +153,7 @@ impl EnvFile {
             .position(|l| matches!(l, Line::Var(v) if v.name == name))
     }
 
-    /// 变量的有效加密意图：显式指令优先，否则跟随文件模式。
+    /// A variable's effective encryption intent: an explicit directive wins, otherwise the file mode.
     pub fn should_encrypt(&self, name: &str) -> bool {
         match self.index_of(name).and_then(|i| self.directive_at(i)) {
             Some(Directive::Enc) => true,
@@ -165,7 +167,7 @@ impl EnvFile {
         self.index_of(name).and_then(|i| self.directive_at(i))
     }
 
-    /// 只看紧邻上方、中间无空行的连续注释块。
+    /// Only looks at the contiguous comment block directly above, with no blank line in between.
     fn directive_at(&self, var_idx: usize) -> Option<Directive> {
         self.scan_directive(var_idx).ok().flatten().map(|(d, _)| d)
     }
@@ -186,7 +188,7 @@ impl EnvFile {
             let plain = t.contains(Directive::Plain.token());
             if enc && plain {
                 bail!(
-                    "{}:{}: 同一行同时出现 @ENC 与 @PLAIN",
+                    "{}:{}: @ENC and @PLAIN on the same line",
                     self.path.display(),
                     i + 1
                 );
@@ -202,7 +204,7 @@ impl EnvFile {
                 if let Some((prev, _)) = found {
                     if prev != d {
                         bail!(
-                            "{}:{}: 同一变量上方同时出现 @ENC 与 @PLAIN",
+                            "{}:{}: both @ENC and @PLAIN above the same variable",
                             self.path.display(),
                             i + 1
                         );
@@ -227,7 +229,7 @@ impl EnvFile {
     pub fn set_value(&mut self, name: &str, value: &str) -> Result<()> {
         let idx = self
             .index_of(name)
-            .with_context(|| format!("{}: 没有变量 {name}", self.path.display()))?;
+            .with_context(|| format!("{}: no variable named {name}", self.path.display()))?;
         if let Line::Var(v) = &mut self.lines[idx] {
             v.value = value.to_string();
             if v.quote == Quote::None && needs_quote(value) {
@@ -237,7 +239,7 @@ impl EnvFile {
         Ok(())
     }
 
-    /// 新增或更新变量；`want_enc` 为 None 表示沿用文件默认（不写指令）。
+    /// Insert or update a variable; `want_enc` of None means follow the file default (no directive written).
     pub fn upsert(&mut self, name: &str, value: &str, want_enc: Option<bool>) -> Result<()> {
         if self.index_of(name).is_none() {
             let quote = if needs_quote(value) {
@@ -269,12 +271,12 @@ impl EnvFile {
         Ok(())
     }
 
-    /// 让 `name` 的有效加密意图等于 `want`：与文件默认一致则去掉多余指令，
-    /// 否则写入 / 修正指令注释。
+    /// Make `name`'s effective encryption intent equal `want`: drop the redundant directive
+    /// when it matches the file default, otherwise write or fix the directive comment.
     pub fn apply_directive(&mut self, name: &str, want: bool) -> Result<()> {
         let idx = self
             .index_of(name)
-            .with_context(|| format!("{}: 没有变量 {name}", self.path.display()))?;
+            .with_context(|| format!("{}: no variable named {name}", self.path.display()))?;
         let existing = self.scan_directive(idx)?;
         let needed = if want == self.mode.encrypts_by_default() {
             None
@@ -312,11 +314,11 @@ impl EnvFile {
         Ok(())
     }
 
-    /// 删除变量行，以及紧邻其上、仅含指令的注释行。
+    /// Remove the variable line, plus a directive-only comment line directly above it.
     pub fn remove(&mut self, name: &str) -> Result<()> {
         let idx = self
             .index_of(name)
-            .with_context(|| format!("{}: 没有变量 {name}", self.path.display()))?;
+            .with_context(|| format!("{}: no variable named {name}", self.path.display()))?;
         let directive_line = self.scan_directive(idx)?.and_then(|(d, i)| {
             let Line::Raw(raw) = &self.lines[i] else {
                 return None;
@@ -348,7 +350,7 @@ impl EnvFile {
         out
     }
 
-    /// 原子写回，权限 0600。
+    /// Atomic write-back with mode 0600.
     pub fn save(&self) -> Result<()> {
         use std::io::Write;
         let text = self.render();
@@ -368,12 +370,12 @@ impl EnvFile {
         }
         let mut f = opts
             .open(&tmp)
-            .with_context(|| format!("写入 {} 失败", tmp.display()))?;
+            .with_context(|| format!("failed to write {}", tmp.display()))?;
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
         drop(f);
         std::fs::rename(&tmp, &self.path)
-            .with_context(|| format!("替换 {} 失败", self.path.display()))?;
+            .with_context(|| format!("failed to replace {}", self.path.display()))?;
         Ok(())
     }
 }
@@ -444,7 +446,7 @@ fn unescape_double(v: &str) -> String {
     out
 }
 
-/// `# @localenvx-mode:` 只在第一个变量之前生效；之后出现一律忽略。
+/// `# @localenvx-mode:` only takes effect before the first variable; later occurrences are ignored.
 fn detect_mode(lines: &[Line], path: &Path) -> Result<Mode> {
     let mut mode = None;
     for line in lines {
@@ -462,12 +464,12 @@ fn detect_mode(lines: &[Line], path: &Path) -> Result<Mode> {
                 let found = match word.as_str() {
                     "blacklist" => Mode::Blacklist,
                     "whitelist" => Mode::Whitelist,
-                    other => bail!("{}: 未知的 {MODE_TAG}{other}", path.display()),
+                    other => bail!("{}: unknown {MODE_TAG}{other}", path.display()),
                 };
                 match mode {
                     Some(prev) if prev != found => {
                         bail!(
-                            "{}: 同时出现 blacklist 与 whitelist 模式标记",
+                            "{}: both blacklist and whitelist mode tags present",
                             path.display()
                         )
                     }
@@ -522,7 +524,7 @@ fn parse_var_line(raw: &str) -> Option<Var> {
                 }
                 i += 1;
             }
-            let end = end?; // 未闭合的引号：不当作变量行，原样保留
+            let end = end?; // Unterminated quote: not a variable line, keep it verbatim
             let inner = &body[1..end];
             let value = if q == '"' {
                 unescape_double(inner)
@@ -593,13 +595,13 @@ mod tests {
         assert!(!f.should_encrypt("A"));
         assert!(f.should_encrypt("B"));
 
-        let w = parse("# @localenvx-mode:whitelist\nX=1\n\n# @ENC 生产 key\nY=2\n");
+        let w = parse("# @localenvx-mode:whitelist\nX=1\n\n# @ENC production key\nY=2\n");
         assert_eq!(w.mode, Mode::Whitelist);
         assert!(!w.should_encrypt("X"));
         assert!(w.should_encrypt("Y"));
     }
 
-    /// 无标记 → blacklist：默认加密，安全的那一侧。
+    /// No tag → blacklist: encrypt by default, the safe side.
     #[test]
     fn default_mode_is_blacklist() {
         let f = parse("A=1\n\n# @PLAIN\nB=2\n");
@@ -638,14 +640,14 @@ mod tests {
 
     #[test]
     fn upsert_writes_directive() {
-        // whitelist 文件里要加密 → 必须写 @ENC
+        // Encrypting in a whitelist file → @ENC must be written
         let mut w = parse("# @localenvx-mode:whitelist\nA=1\n");
         w.upsert("B", "s3cr3t", Some(true)).unwrap();
         assert!(w.render().contains("# @ENC\nB=s3cr3t"));
         w.apply_directive("B", false).unwrap();
         assert!(!w.render().contains("@ENC"));
 
-        // blacklist（默认）文件里要加密 → 跟默认一致，不写多余指令
+        // Encrypting in a blacklist (default) file → matches the default, no directive written
         let mut b = parse("A=1\n");
         b.upsert("B", "s3cr3t", Some(true)).unwrap();
         assert!(!b.render().contains("@ENC"));

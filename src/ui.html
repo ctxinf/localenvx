@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="referrer" content="no-referrer">
@@ -18,8 +18,8 @@
     }
   }
   * { box-sizing: border-box; }
-  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,"Noto Sans CJK SC",sans-serif; color:var(--fg); background:var(--bg); }
-  /* 页面整体居中：header 与 main 共用同一条 --wrap 宽度 */
+  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,sans-serif; color:var(--fg); background:var(--bg); }
+  /* Center the page: header and main share the same --wrap width */
   .wrap { max-width:960px; margin-inline:auto; padding-inline:24px; }
   header { padding-block:14px; border-bottom:1px solid var(--line); }
   header .wrap { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
@@ -37,7 +37,7 @@
   .val { font-family:ui-monospace,monospace; cursor:pointer; color:var(--mut); word-break:break-all; }
   .val.shown { color:var(--fg); }
   .th-val { display:flex; align-items:center; gap:6px; }
-  /* 注释行与空行：无边框、等宽、暗色，读起来就是 .env 原文 */
+  /* Comment and blank lines: no border, monospace, muted — reads like the raw .env */
   tr.cmt td { border-bottom:none; padding:2px 8px; color:var(--mut); font-family:ui-monospace,monospace;
               font-size:12.5px; white-space:pre-wrap; word-break:break-all; }
   tr.cmt.directive td { color:var(--acc); }
@@ -52,7 +52,8 @@
   .eye.on { color:var(--acc); }
   .tag { display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 7px; border-radius:99px; border:1px solid var(--line); color:var(--mut); }
   .tag.enc { color:var(--acc); border-color:var(--acc); }
-  /* 文件模式要一眼看清：blacklist=默认加密（安全），whitelist=默认明文（要当心） */
+  /* The file mode must be obvious at a glance: blacklist = encrypt by default (safe),
+     whitelist = plaintext by default (watch out) */
   .mode { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600;
           letter-spacing:.04em; text-transform:uppercase; padding:3px 9px; border-radius:99px; border:1px solid transparent; }
   .mode.blacklist { color:var(--ok);   background:var(--ok-bg);   border-color:var(--ok); }
@@ -75,9 +76,9 @@
 <main class="wrap">
   <table>
     <thead><tr>
-      <th>变量</th>
-      <th><span class="th-val">值<button class="eye" id="eye" type="button" title="全部显形/隐藏" aria-pressed="false"></button></span></th>
-      <th>状态</th><th></th>
+      <th>Variable</th>
+      <th><span class="th-val">Value<button class="eye" id="eye" type="button" title="Reveal/hide all" aria-pressed="false"></button></span></th>
+      <th>Status</th><th></th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -86,11 +87,11 @@
     <input name="name" placeholder="NAME" required pattern="[A-Za-z_][A-Za-z0-9_]*">
     <input name="value" placeholder="value" required>
     <select name="enc">
-      <option value="auto">按文件模式</option>
-      <option value="enc">强制加密</option>
-      <option value="plain">强制明文</option>
+      <option value="auto">Follow file mode</option>
+      <option value="enc">Force encrypted</option>
+      <option value="plain">Force plaintext</option>
     </select>
-    <button class="primary" type="submit">写入</button>
+    <button class="primary" type="submit">Save</button>
   </form>
   <div id="msg"></div>
 </main>
@@ -109,14 +110,14 @@ const ICON = {
   unlock:  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 7.5-2"/></svg>',
 };
 
-// 全局显形开关：默认关（防截图 / 屏幕共享泄露）
+// Global reveal switch: off by default (guards against screenshots / screen sharing)
 let revealAll = false;
 function paintEye() {
   const btn = $('#eye');
   btn.innerHTML = revealAll ? ICON.eye : ICON.eyeOff;
   btn.classList.toggle('on', revealAll);
   btn.setAttribute('aria-pressed', String(revealAll));
-  btn.title = revealAll ? '隐藏全部值' : '显示全部值';
+  btn.title = revealAll ? 'Hide all values' : 'Show all values';
 }
 function applyReveal() {
   $$('.val').forEach(el => {
@@ -152,8 +153,8 @@ async function loadFile() {
   mode.className = 'mode ' + j.mode;
   mode.innerHTML = (j.mode === 'blacklist' ? ICON.lock : ICON.unlock) + '<span>' + j.mode + '</span>';
   mode.title = j.mode === 'blacklist'
-    ? '默认加密：无标记的变量都会被加密，需 # @PLAIN 显式豁免'
-    : '默认明文：只有标了 # @ENC 的变量才加密';
+    ? 'Encrypted by default: every unmarked variable is encrypted; use # @PLAIN to opt out'
+    : 'Plaintext by default: only variables marked # @ENC are encrypted';
 
   const rows = $('#rows'); rows.innerHTML = '';
   j.lines.forEach(l => {
@@ -161,17 +162,17 @@ async function loadFile() {
   });
   applyReveal();
   const n = j.lines.filter(l => l.kind === 'var').length;
-  msg(n ? '' : '（这个文件还没有变量）');
+  msg(n ? '' : '(this file has no variables yet)');
 }
 
-/// 注释行原样渲染 —— 让页面读起来跟 .env 文本本身一样。
+/// Render comment lines verbatim, so the page reads like the .env text itself.
 function commentRow(text) {
   const tr = document.createElement('tr');
   tr.className = 'cmt';
   const td = document.createElement('td');
   td.colSpan = 4;
   td.textContent = text;
-  // @ENC / @PLAIN / @localenvx-mode: 是有语义的指令，不是普通注释
+  // @ENC / @PLAIN / @localenvx-mode: are meaningful directives, not ordinary comments
   if (/@ENC\b|@PLAIN\b|@localenvx-mode:/.test(text)) tr.classList.add('directive');
   tr.append(td);
   return tr;
@@ -193,25 +194,26 @@ function row(path, v) {
   const val = document.createElement('td');
   const cell = document.createElement('div'); cell.className = 'val-cell';
   const span = document.createElement('span');
-  span.className = 'val'; span.textContent = DOTS; span.title = '点击显形/隐藏';
-  span.dataset.value = v.value;               // 单行仍可独立点开
+  span.className = 'val'; span.textContent = DOTS; span.title = 'Click to reveal/hide';
+  span.dataset.value = v.value;               // A single row can still be revealed on its own
   span.onclick = () => {
     const shown = span.classList.toggle('shown');
     span.textContent = shown ? v.value : DOTS;
   };
 
-  // 复制不需要先显形——值一直在 DOM 里，显形只是防肩窥/截图
+  // Copying does not require revealing first — the value is always in the DOM;
+  // revealing only guards against shoulder-surfing and screenshots
   const copy = document.createElement('button');
   copy.className = 'copy'; copy.type = 'button';
-  copy.innerHTML = ICON.copy; copy.title = '复制值到剪贴板';
+  copy.innerHTML = ICON.copy; copy.title = 'Copy value to clipboard';
   copy.onclick = async () => {
     try {
       await navigator.clipboard.writeText(v.value);
       copy.innerHTML = ICON.check; copy.classList.add('ok');
-      msg('已复制 ' + v.name + ' 到剪贴板');
+      msg('Copied ' + v.name + ' to the clipboard');
       setTimeout(() => { copy.innerHTML = ICON.copy; copy.classList.remove('ok'); }, 1200);
     } catch (e) {
-      msg('复制失败: ' + e.message);
+      msg('Copy failed: ' + e.message);
     }
   };
 
@@ -225,17 +227,17 @@ function row(path, v) {
   st.append(tag);
 
   const act = document.createElement('td'); act.className = 'row-actions';
-  const edit = document.createElement('button'); edit.textContent = '改';
+  const edit = document.createElement('button'); edit.textContent = 'Edit';
   edit.onclick = async () => {
-    const nv = prompt('新值 — ' + v.name, v.value);
+    const nv = prompt('New value — ' + v.name, v.value);
     if (nv === null) return;
     await save(path, v.name, nv, v.encrypted ? 'enc' : 'plain');
   };
-  const del = document.createElement('button'); del.textContent = '删';
+  const del = document.createElement('button'); del.textContent = 'Delete';
   del.onclick = async () => {
-    if (!confirm('删除 ' + v.name + ' ?')) return;
-    try { await api('/api/rm', { method: 'POST', body: JSON.stringify({ path, name: v.name }) }); await loadFile(); msg('已删除 ' + v.name); }
-    catch (e) { msg('失败: ' + e.message); }
+    if (!confirm('Delete ' + v.name + '?')) return;
+    try { await api('/api/rm', { method: 'POST', body: JSON.stringify({ path, name: v.name }) }); await loadFile(); msg('Deleted ' + v.name); }
+    catch (e) { msg('Failed: ' + e.message); }
   };
   act.append(edit, del);
 
@@ -247,8 +249,8 @@ async function save(path, name, value, enc) {
   try {
     await api('/api/set', { method: 'POST', body: JSON.stringify({ path, name, value, enc }) });
     await loadFile();
-    msg('已写入 ' + name);
-  } catch (e) { msg('失败: ' + e.message); }
+    msg('Saved ' + name);
+  } catch (e) { msg('Failed: ' + e.message); }
 }
 
 $('#eye').onclick = () => { revealAll = !revealAll; paintEye(); applyReveal(); };
@@ -261,7 +263,7 @@ $('#add').onsubmit = async e => {
   await save($('#file').value, f.name.value, f.value.value, f.enc.value);
   f.value.value = '';
 };
-loadFiles().catch(e => msg('加载失败: ' + e.message));
+loadFiles().catch(e => msg('Load failed: ' + e.message));
 </script>
 </body>
 </html>

@@ -1,7 +1,7 @@
-//! 密码来源解析 + 惰性密钥派生。
+//! Password source resolution plus lazy key derivation.
 //!
-//! 优先级：--password-stdin / 交互输入 > LOCALENVX_PASSWORD > config.password > 交互提示。
-//! 刻意不提供 `--password <值>`：避免进 shell history 与 /proc/*/cmdline。
+//! Precedence: --password-stdin / interactive input > LOCALENVX_PASSWORD > config.password > prompt.
+//! `--password <value>` is deliberately not offered: it would land in shell history and /proc/*/cmdline.
 
 use anyhow::{Context, Result, bail};
 use zeroize::Zeroizing;
@@ -28,7 +28,7 @@ impl Session {
         Ok(Self::new(crate::config::load()?, password_stdin))
     }
 
-    /// 派生一次，整个进程复用（`run` 的启动开销只付一次 argon2）。
+    /// Derive once and reuse for the whole process (`run` pays for argon2 only once).
     pub fn key(&mut self) -> Result<&Key> {
         if self.key.is_none() {
             let pw = self.password()?;
@@ -52,7 +52,7 @@ impl Session {
                 return Ok(Zeroizing::new(p.to_string()));
             }
         }
-        prompt_password("localenvx 密码: ")
+        prompt_password("localenvx password: ")
     }
 }
 
@@ -61,10 +61,10 @@ pub fn read_password_stdin() -> Result<Zeroizing<String>> {
     let mut buf = String::new();
     std::io::stdin()
         .read_to_string(&mut buf)
-        .context("从 stdin 读取密码失败")?;
+        .context("failed to read the password from stdin")?;
     let pw = Zeroizing::new(buf.trim_end_matches(['\n', '\r']).to_string());
     if pw.is_empty() {
-        bail!("stdin 上没有读到密码");
+        bail!("no password received on stdin");
     }
     Ok(pw)
 }
@@ -80,20 +80,23 @@ pub fn is_tty() -> bool {
 
 pub fn prompt_password(prompt: &str) -> Result<Zeroizing<String>> {
     if !is_tty() {
-        bail!("需要密码但 stdin 不是终端；请设置 LOCALENVX_PASSWORD 或使用 --password-stdin");
+        bail!(
+            "a password is required but stdin is not a terminal; set LOCALENVX_PASSWORD or use --password-stdin"
+        );
     }
-    let pw = Zeroizing::new(rpassword::prompt_password(prompt).context("读取密码失败")?);
+    let pw =
+        Zeroizing::new(rpassword::prompt_password(prompt).context("failed to read the password")?);
     if pw.is_empty() {
-        bail!("密码不能为空");
+        bail!("the password must not be empty");
     }
     Ok(pw)
 }
 
 pub fn prompt_new_password() -> Result<Zeroizing<String>> {
-    let a = prompt_password("设置密码: ")?;
-    let b = prompt_password("再输一次: ")?;
+    let a = prompt_password("new password: ")?;
+    let b = prompt_password("repeat password: ")?;
     if *a != *b {
-        bail!("两次输入不一致");
+        bail!("the two entries do not match");
     }
     Ok(a)
 }

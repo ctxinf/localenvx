@@ -1,6 +1,6 @@
-//! 密钥派生与值级加解密。
+//! Key derivation and value-level encryption.
 //!
-//! password ──argon2id(salt)──▶ key ──XChaCha20-Poly1305──▶ .env 里的值
+//! password ──argon2id(salt)──▶ key ──XChaCha20-Poly1305──▶ values in .env
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
@@ -13,7 +13,7 @@ pub const PREFIX: &str = "encrypted:v1:";
 const NONCE_LEN: usize = 24;
 const SALT_LEN: usize = 16;
 
-/// 派生出的对称密钥，drop 时擦除。
+/// The derived symmetric key, wiped on drop.
 pub struct Key([u8; 32]);
 
 impl Drop for Key {
@@ -31,7 +31,7 @@ pub struct KdfParams {
 
 impl Default for KdfParams {
     fn default() -> Self {
-        // m=64MB/t=3 在本机约 ~80ms，满足 <100ms 的启动开销目标。
+        // m=64MB/t=3 costs ~80ms on this machine, within the <100ms startup budget.
         Self {
             m: 65536,
             t: 3,
@@ -42,7 +42,7 @@ impl Default for KdfParams {
 
 pub fn random_bytes(n: usize) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; n];
-    getrandom::fill(&mut buf).map_err(|e| anyhow!("获取随机数失败: {e}"))?;
+    getrandom::fill(&mut buf).map_err(|e| anyhow!("failed to get random bytes: {e}"))?;
     Ok(buf)
 }
 
@@ -55,17 +55,17 @@ pub fn derive_key(password: &str, salt_b64: &str, p: KdfParams) -> Result<Key> {
 
     let salt = B64
         .decode(salt_b64.trim())
-        .context("config 里的 kdf.salt 不是合法 base64")?;
+        .context("kdf.salt in the config is not valid base64")?;
     if salt.len() < 8 {
-        bail!("kdf.salt 太短（至少 8 字节）");
+        bail!("kdf.salt is too short (8 bytes minimum)");
     }
-    let params =
-        Params::new(p.m, p.t, p.p, Some(32)).map_err(|e| anyhow!("argon2 参数非法: {e}"))?;
+    let params = Params::new(p.m, p.t, p.p, Some(32))
+        .map_err(|e| anyhow!("invalid argon2 parameters: {e}"))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; 32];
     argon
         .hash_password_into(password.as_bytes(), &salt, &mut key)
-        .map_err(|e| anyhow!("密钥派生失败: {e}"))?;
+        .map_err(|e| anyhow!("key derivation failed: {e}"))?;
     Ok(Key(key))
 }
 
@@ -73,7 +73,7 @@ pub fn is_encrypted(value: &str) -> bool {
     value.starts_with(PREFIX)
 }
 
-/// AAD 绑定变量名，防止把 A 的密文剪贴到 B 上。
+/// The AAD binds the variable name, so A's ciphertext cannot be pasted onto B.
 pub fn encrypt(key: &Key, name: &str, plaintext: &str) -> Result<String> {
     let cipher = XChaCha20Poly1305::new(key.0.as_ref().into());
     let nonce_bytes = random_bytes(NONCE_LEN)?;
@@ -86,7 +86,7 @@ pub fn encrypt(key: &Key, name: &str, plaintext: &str) -> Result<String> {
                 aad: name.as_bytes(),
             },
         )
-        .map_err(|_| anyhow!("加密失败"))?;
+        .map_err(|_| anyhow!("encryption failed"))?;
     let mut blob = Vec::with_capacity(NONCE_LEN + ct.len());
     blob.extend_from_slice(&nonce_bytes);
     blob.extend_from_slice(&ct);
@@ -96,12 +96,12 @@ pub fn encrypt(key: &Key, name: &str, plaintext: &str) -> Result<String> {
 pub fn decrypt(key: &Key, name: &str, value: &str) -> Result<Zeroizing<String>> {
     let body = value
         .strip_prefix(PREFIX)
-        .ok_or_else(|| anyhow!("{name}: 不是 {PREFIX} 格式的密文"))?;
+        .ok_or_else(|| anyhow!("{name}: not a {PREFIX} ciphertext"))?;
     let blob = B64URL
         .decode(body.trim())
-        .with_context(|| format!("{name}: 密文 base64 解码失败"))?;
+        .with_context(|| format!("{name}: failed to base64-decode the ciphertext"))?;
     if blob.len() <= NONCE_LEN + 16 {
-        bail!("{name}: 密文长度非法");
+        bail!("{name}: invalid ciphertext length");
     }
     let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
     let cipher = XChaCha20Poly1305::new(key.0.as_ref().into());
@@ -113,11 +113,11 @@ pub fn decrypt(key: &Key, name: &str, value: &str) -> Result<Zeroizing<String>> 
                 aad: name.as_bytes(),
             },
         )
-        .map_err(|_| anyhow!("{name}: 解密失败（密码错误、密文损坏，或变量被改名）"))?;
+        .map_err(|_| anyhow!("{name}: decryption failed (wrong password, corrupted ciphertext, or the variable was renamed)"))?;
     let s = String::from_utf8(pt).map_err(|e| {
         let mut bytes = e.into_bytes();
         bytes.zeroize();
-        anyhow!("{name}: 解密结果不是合法 UTF-8")
+        anyhow!("{name}: decrypted output is not valid UTF-8")
     })?;
     Ok(Zeroizing::new(s))
 }

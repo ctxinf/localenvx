@@ -1,7 +1,7 @@
-//! F7 — 本地 Web UI。
+//! F7 — local web UI.
 //!
-//! 前台进程、只绑 127.0.0.1、无 token、无超时，Ctrl-C 即退出。
-//! 安全要点见 design.md §F7：校验 Origin / Sec-Fetch-Site、no-store、value 默认打码。
+//! A foreground process bound to 127.0.0.1 only, with no token and no timeout; Ctrl-C quits.
+//! Security notes live in design.md §F7: check Origin / Sec-Fetch-Site, send no-store, mask values by default.
 
 use anyhow::{Context, Result, bail};
 use std::io::Cursor;
@@ -16,7 +16,7 @@ use crate::term::{cyan, dim, green};
 
 const PORT_SPAN: u16 = 100;
 
-/// 内联 favicon：一把锁扣在 `$` 上。深浅色各一套，跟随系统主题。
+/// Inline favicon: a padlock over a `$`. One palette per color scheme, following the system theme.
 const FAVICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <style>
     .bg { fill: #2f5ed8 }
@@ -31,7 +31,7 @@ const FAVICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3
 
 pub fn serve(start_port: u16, strict_port: bool, password_stdin: bool) -> Result<()> {
     let project = std::env::current_dir()?;
-    // 先验一次密码，免得开了页面才发现解不开。
+    // Verify the password up front, so we do not discover it is wrong only after opening the page.
     let mut sess = Session::open(password_stdin)?;
     sess.key()?;
     let sess = Mutex::new(sess);
@@ -42,7 +42,10 @@ pub fn serve(start_port: u16, strict_port: bool, password_stdin: bool) -> Result
         "{}  {}\n{}",
         green("localenvx ui"),
         cyan(&format!("http://127.0.0.1:{port}/")),
-        dim(&format!("  项目 {}   (Ctrl-C 结束)", project.display()))
+        dim(&format!(
+            "  project {}   (Ctrl-C to quit)",
+            project.display()
+        ))
     );
 
     for req in server.incoming_requests() {
@@ -53,7 +56,7 @@ pub fn serve(start_port: u16, strict_port: bool, password_stdin: bool) -> Result
     Ok(())
 }
 
-/// 「被占用」以实际 bind 失败为准，不做预检探测（避免 TOCTOU）。
+/// "Taken" means an actual bind failure; no pre-flight probing (avoids TOCTOU).
 fn bind(start: u16, strict: bool) -> Result<(Server, u16)> {
     let last = if strict {
         start
@@ -66,12 +69,12 @@ fn bind(start: u16, strict: bool) -> Result<(Server, u16)> {
             Err(e) => {
                 let io_kind = e.downcast_ref::<std::io::Error>().map(|io| io.kind());
                 if strict || io_kind != Some(std::io::ErrorKind::AddrInUse) {
-                    bail!("绑定 127.0.0.1:{port} 失败: {e}");
+                    bail!("failed to bind 127.0.0.1:{port}: {e}");
                 }
             }
         }
     }
-    bail!("{start}..={last} 全部被占用")
+    bail!("{start}..={last} are all taken")
 }
 
 fn handle(req: Request, sess: &Mutex<Session>, project: &Path, origin: &str) -> Result<()> {
@@ -121,7 +124,7 @@ fn handle(req: Request, sess: &Mutex<Session>, project: &Path, origin: &str) -> 
     }
 }
 
-/// 唯一真实的远程风险是 DNS rebinding / 恶意网页打 localhost，这里直接挡掉跨站请求。
+/// The only real remote risk is DNS rebinding / a malicious page hitting localhost, so cross-site requests are blocked outright.
 fn check_origin(req: &Request, origin: &str) -> std::result::Result<(), String> {
     let get = |name: &str| {
         req.headers()
@@ -131,19 +134,21 @@ fn check_origin(req: &Request, origin: &str) -> std::result::Result<(), String> 
     };
     if let Some(site) = get("Sec-Fetch-Site") {
         if site != "same-origin" && site != "none" {
-            return Err(format!("拒绝跨站请求 (Sec-Fetch-Site: {site})"));
+            return Err(format!(
+                "cross-site request rejected (Sec-Fetch-Site: {site})"
+            ));
         }
     }
     if let Some(o) = get("Origin") {
         if o != origin {
-            return Err(format!("拒绝跨站请求 (Origin: {o})"));
+            return Err(format!("cross-site request rejected (Origin: {o})"));
         }
     }
-    // Host 必须是回环地址，挡住 DNS rebinding。
+    // The Host must be a loopback address, which blocks DNS rebinding.
     if let Some(h) = get("Host") {
         let host = h.split(':').next().unwrap_or("");
         if host != "127.0.0.1" && host != "localhost" && host != "[::1]" {
-            return Err(format!("拒绝非回环 Host: {h}"));
+            return Err(format!("non-loopback Host rejected: {h}"));
         }
     }
     Ok(())
@@ -166,7 +171,7 @@ fn respond(req: Request, status: u16, ctype: &str, body: Vec<u8>) -> Result<()> 
             resp.add_header(h);
         }
     }
-    req.respond(resp).context("发送响应失败")
+    req.respond(resp).context("failed to send the response")
 }
 
 fn json(req: Request, status: u16, v: &serde_json::Value) -> Result<()> {
@@ -189,7 +194,7 @@ where
         Err(e) => json(
             req,
             400,
-            &serde_json::json!({ "error": format!("请求体不是合法 JSON: {e}") }),
+            &serde_json::json!({ "error": format!("request body is not valid JSON: {e}") }),
         ),
     }
 }
@@ -230,12 +235,12 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// ── 文件访问：只允许项目目录下的 .env* ────────────────────────────────────────
+// ── File access: only .env* inside the project directory ────────────────────
 
 fn safe_path(project: &Path, name: &str) -> Result<PathBuf> {
     if name.contains('/') || name.contains('\\') || name.contains("..") || !name.starts_with(".env")
     {
-        bail!("不允许的文件名: {name}");
+        bail!("disallowed file name: {name}");
     }
     Ok(project.join(name))
 }
@@ -261,7 +266,8 @@ fn read_file(sess: &Mutex<Session>, project: &Path, name: &str) -> Result<serde_
         EnvFile::empty_at(&path)
     };
     let mut sess = sess.lock().unwrap();
-    // 按行原样返回（含注释与空行），让前端能把 .env 渲染成它本来的样子。
+    // Return the lines verbatim (comments and blanks included) so the frontend can render
+    // the .env the way it actually looks.
     let mut lines = Vec::new();
     for item in file.items() {
         lines.push(match item {
@@ -287,9 +293,9 @@ fn read_file(sess: &Mutex<Session>, project: &Path, name: &str) -> Result<serde_
 }
 
 fn write_var(sess: &Mutex<Session>, project: &Path, v: &serde_json::Value) -> Result<()> {
-    let name = v["name"].as_str().context("缺少 name")?.to_string();
-    let value = v["value"].as_str().context("缺少 value")?.to_string();
-    let file_name = v["path"].as_str().context("缺少 path")?;
+    let name = v["name"].as_str().context("missing name")?.to_string();
+    let value = v["value"].as_str().context("missing value")?.to_string();
+    let file_name = v["path"].as_str().context("missing path")?;
     let want_enc = match v["enc"].as_str().unwrap_or("auto") {
         "enc" => Some(true),
         "plain" => Some(false),
@@ -314,8 +320,8 @@ fn write_var(sess: &Mutex<Session>, project: &Path, v: &serde_json::Value) -> Re
 }
 
 fn remove_var(project: &Path, v: &serde_json::Value) -> Result<()> {
-    let name = v["name"].as_str().context("缺少 name")?;
-    let path = safe_path(project, v["path"].as_str().context("缺少 path")?)?;
+    let name = v["name"].as_str().context("missing name")?;
+    let path = safe_path(project, v["path"].as_str().context("missing path")?)?;
     let mut file = EnvFile::load(&path)?;
     file.remove(name)?;
     file.save()

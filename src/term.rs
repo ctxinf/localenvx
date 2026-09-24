@@ -1,4 +1,4 @@
-//! stderr 上的 inspect 日志：绝不打印 value，只打印 key 名。
+//! Inspect logging on stderr: never prints values, only key names.
 
 use std::io::IsTerminal;
 use std::sync::OnceLock;

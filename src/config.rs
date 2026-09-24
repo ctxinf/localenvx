@@ -1,4 +1,4 @@
-//! ~/.config/localenvx/config.toml —— salt、KDF 参数、（可选的）密码。
+//! ~/.config/localenvx/config.toml — salt, KDF parameters and (optionally) the password.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@ pub fn config_dir() -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(d) if !d.is_empty() => PathBuf::from(d),
         _ => {
-            let home = std::env::var_os("HOME").context("找不到 $HOME")?;
+            let home = std::env::var_os("HOME").context("$HOME is not set")?;
             PathBuf::from(home).join(".config")
         }
     };
@@ -78,34 +78,37 @@ pub fn load() -> Result<Config> {
     let path = config_path()?;
     if !path.exists() {
         bail!(
-            "还没初始化：请先运行 `localenvx init`（config: {}）",
+            "not initialized yet: run `localenvx init` first (config: {})",
             path.display()
         );
     }
     check_perms(&path)?;
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("读取 {} 失败", path.display()))?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
     let cfg: Config =
-        toml::from_str(&text).with_context(|| format!("解析 {} 失败", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     if cfg.version != 1 {
-        bail!("config version {} 不受支持（本二进制只认 1）", cfg.version);
+        bail!(
+            "unsupported config version {} (this binary only knows 1)",
+            cfg.version
+        );
     }
     if cfg.kdf.algo != "argon2id" {
-        bail!("不支持的 kdf.algo: {}", cfg.kdf.algo);
+        bail!("unsupported kdf.algo: {}", cfg.kdf.algo);
     }
     Ok(cfg)
 }
 
 pub fn save(cfg: &Config) -> Result<PathBuf> {
     let dir = config_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("创建 {} 失败", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let path = dir.join("config.toml");
     let text = toml::to_string_pretty(cfg)?;
     write_private(&path, text.as_bytes())?;
     Ok(path)
 }
 
-/// 以 0600 原子写入（先写临时文件再 rename，避免半截文件）。
+/// Atomic write with mode 0600 (temp file then rename, so no half-written file is left).
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let tmp = path.with_extension("toml.tmp");
@@ -118,15 +121,15 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let mut f = opts
         .open(&tmp)
-        .with_context(|| format!("写入 {} 失败", tmp.display()))?;
+        .with_context(|| format!("failed to write {}", tmp.display()))?;
     f.write_all(bytes)?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("failed to replace {}", path.display()))?;
     Ok(())
 }
 
-/// 权限过宽（group/other 有任何位）则拒绝运行。
+/// Refuse to run if permissions are too broad (any bit set for group/other).
 pub fn check_perms(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -134,7 +137,7 @@ pub fn check_perms(path: &Path) -> Result<()> {
         let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
             bail!(
-                "{} 权限过宽（{:04o}），拒绝运行。请执行：chmod 600 {}",
+                "{} has overly broad permissions ({:04o}); refusing to run. Run: chmod 600 {}",
                 path.display(),
                 mode,
                 path.display()

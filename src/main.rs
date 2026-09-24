@@ -20,14 +20,14 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     name = "localenvx",
     version,
-    about = "本地开发用的加密环境变量管理工具",
-    long_about = "磁盘上没有明文机密：.env 里的敏感值以 XChaCha20-Poly1305 密文保存，\n只在 `localenvx run` 时解密并通过 environ 传给子进程。"
+    about = "Encrypted environment-variable manager for local development",
+    long_about = "No plaintext secrets on disk: sensitive values in .env are stored as XChaCha20-Poly1305\nciphertext, decrypted only during `localenvx run` and passed to the child process via environ."
 )]
 struct Cli {
-    /// 从 stdin 读取密码（优先级最高）
+    /// Read the password from stdin (highest precedence)
     #[arg(long, global = true)]
     password_stdin: bool,
-    /// 完全静音 stderr 摘要
+    /// Silence the stderr summary entirely
     #[arg(long, short, global = true)]
     quiet: bool,
     #[command(subcommand)]
@@ -36,56 +36,56 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// 生成 salt、设置密码并写入 config
+    /// Generate a salt, set the password and write the config
     Init(InitArgs),
-    /// 加载 .env 并执行子进程（不经 shell）
+    /// Load .env and exec the child process (no shell involved)
     Run(RunArgs),
-    /// 写入变量（按当前模式决定是否加密）
+    /// Write a variable (the file mode decides whether it is encrypted)
     Set(SetArgs),
-    /// 读取单个变量的值到 stdout
+    /// Print a single variable's value to stdout
     Get(GetArgs),
-    /// 列出 key 名与加密状态（不显示 value）
+    /// List key names and encryption status (never values)
     #[command(visible_alias = "ls")]
     List(ListArgs),
-    /// 删除变量
+    /// Remove a variable
     Rm(RmArgs),
-    /// 批量加密现有明文
+    /// Bulk-encrypt existing plaintext values
     #[command(visible_alias = "enc")]
     Encrypt(BulkArgs),
-    /// 解密为明文（慎用：明文会落盘）
+    /// Decrypt to plaintext (careful: plaintext lands on disk)
     #[command(visible_alias = "dec")]
     Decrypt(BulkArgs),
-    /// 改密码，并用新密码重加密指定文件
+    /// Change the password and re-encrypt the given files with it
     Passwd(PasswdArgs),
-    /// 本地 Web UI（127.0.0.1，前台进程，Ctrl-C 退出）
+    /// Local web UI (127.0.0.1, foreground process, Ctrl-C to quit)
     Ui(UiArgs),
 }
 
 #[derive(Args)]
 struct InitArgs {
-    /// 不把密码写进 config（之后每次用 LOCALENVX_PASSWORD 或手输）
+    /// Do not store the password in the config (use LOCALENVX_PASSWORD or type it each time)
     #[arg(long)]
     no_store: bool,
-    /// 覆盖已存在的 config（会导致旧密文无法解密）
+    /// Overwrite an existing config (old ciphertext becomes undecryptable)
     #[arg(long)]
     force: bool,
 }
 
 #[derive(Args)]
 struct RunArgs {
-    /// env 文件，优先级从左到右递增；缺省为 .env
+    /// env files, precedence increasing left to right; defaults to .env
     files: Vec<PathBuf>,
-    /// 让文件覆盖真实进程环境变量（默认相反）
+    /// Let files override the real process environment (the default is the opposite)
     #[arg(long)]
     r#override: bool,
-    /// 要执行的命令，写在 `--` 之后
+    /// The command to run, written after `--`
     #[arg(last = true, required = true)]
     cmd: Vec<String>,
 }
 
 #[derive(Args)]
 struct FileArg {
-    /// 目标文件，缺省为 .env
+    /// Target file; defaults to .env
     #[arg(short, long, default_value = ".env")]
     file: PathBuf,
 }
@@ -96,13 +96,13 @@ struct SetArgs {
     value: Option<String>,
     #[command(flatten)]
     file: FileArg,
-    /// 强制明文
+    /// Force plaintext
     #[arg(long, conflicts_with = "enc")]
     plain: bool,
-    /// 强制加密
+    /// Force encryption
     #[arg(long)]
     enc: bool,
-    /// 从 stdin 读取 value（避免进 shell history）
+    /// Read the value from stdin (keeps it out of shell history)
     #[arg(long)]
     stdin: bool,
 }
@@ -130,26 +130,26 @@ struct RmArgs {
 struct BulkArgs {
     #[command(flatten)]
     file: FileArg,
-    /// 变量名或 glob，可重复；encrypt 缺省为「该文件模式下应加密的全部变量」（blacklist 下即全部）
+    /// Variable name or glob, repeatable; encrypt defaults to "every variable this file's mode says should be encrypted" (all of them under blacklist)
     #[arg(short = 'k', long = "key")]
     keys: Vec<String>,
 }
 
 #[derive(Args)]
 struct PasswdArgs {
-    /// 需要重加密的文件；不传则只换密码（旧密文将无法解密）
+    /// Files to re-encrypt; with none given only the password changes (old ciphertext becomes undecryptable)
     files: Vec<PathBuf>,
-    /// 不把新密码写进 config
+    /// Do not store the new password in the config
     #[arg(long)]
     no_store: bool,
 }
 
 #[derive(Args)]
 struct UiArgs {
-    /// 起始端口，占用则依次 +1（上限 +99）
+    /// Starting port; if taken, try +1 repeatedly (up to +99)
     #[arg(long, default_value_t = 27500)]
     port: u16,
-    /// 端口被占用时直接失败，不顺延
+    /// Fail immediately when the port is taken instead of trying the next one
     #[arg(long)]
     strict_port: bool,
 }
@@ -186,7 +186,7 @@ fn cmd_init(a: &InitArgs) -> Result<()> {
     let path = config::config_path()?;
     if path.exists() && !a.force {
         bail!(
-            "{} 已存在；用 --force 覆盖（旧密文将无法解密）",
+            "{} already exists; pass --force to overwrite (old ciphertext becomes undecryptable)",
             path.display()
         );
     }
@@ -201,15 +201,17 @@ fn cmd_init(a: &InitArgs) -> Result<()> {
     let written = config::save(&cfg)?;
     note!(
         "{} {}",
-        green("✓ 已初始化"),
+        green("✓ initialized"),
         dim(&written.display().to_string())
     );
     if a.no_store {
-        note!("  密码未保存：之后请用 LOCALENVX_PASSWORD 或交互输入");
+        note!("  password not stored: use LOCALENVX_PASSWORD or type it interactively");
     } else {
         note!(
             "  {}",
-            yellow("密码已明文存在 config 里（0600）——建议另存一份到 1Password，忘了不可恢复")
+            yellow(
+                "the password is stored in plaintext in the config (0600) — keep a copy in 1Password; if you forget it nothing can be recovered"
+            )
         );
     }
     Ok(())
@@ -223,7 +225,7 @@ fn cmd_run(a: &RunArgs, password_stdin: bool) -> Result<()> {
     let loaded = load::load_files(&mut sess, &paths, explicit)?;
 
     for m in &loaded.missing {
-        note!("{} 找不到 {}，已跳过", yellow("⚠️"), m.display());
+        note!("{} {} not found, skipped", yellow("⚠️"), m.display());
     }
     print_summary(&loaded);
 
@@ -235,7 +237,7 @@ fn cmd_run(a: &RunArgs, password_stdin: bool) -> Result<()> {
             cmd.env(&e.name, e.value.as_str());
         } else {
             note!(
-                "{} 进程环境里已有 {}，文件值未生效（--override 可反转）",
+                "{} {} is already in the process environment; the file value was not applied (--override flips this)",
                 dim("·"),
                 e.name
             );
@@ -244,19 +246,19 @@ fn cmd_run(a: &RunArgs, password_stdin: bool) -> Result<()> {
     exec(cmd, &a.cmd[0])
 }
 
-/// 直接 execve 替换自身：不经 shell，退出码与信号天然透传。
+/// Replace ourselves via execve: no shell, so exit codes and signals pass through naturally.
 fn exec(mut cmd: std::process::Command, program: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         let err = cmd.exec();
-        Err(anyhow::Error::new(err).context(format!("无法执行 {program}")))
+        Err(anyhow::Error::new(err).context(format!("failed to execute {program}")))
     }
     #[cfg(not(unix))]
     {
         let status = cmd
             .status()
-            .with_context(|| format!("无法执行 {program}"))?;
+            .with_context(|| format!("failed to execute {program}"))?;
         std::process::exit(status.code().unwrap_or(1));
     }
 }
@@ -285,7 +287,7 @@ fn print_summary(loaded: &load::Loaded) {
     }
     for (name, from, to) in &loaded.overrides {
         eprintln!(
-            "  {}  {} 覆盖了 {} 的 {}",
+            "  {}  {} overrides {} from {}",
             yellow("⚠️"),
             to.display(),
             from.display(),
@@ -294,7 +296,7 @@ fn print_summary(loaded: &load::Loaded) {
     }
 }
 
-// ── F5 增删改查 ───────────────────────────────────────────────────────────────
+// ── F5 CRUD ─────────────────────────────────────────────────────────────────
 
 fn open_or_new(path: &std::path::Path) -> Result<EnvFile> {
     if path.exists() {
@@ -313,8 +315,10 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
             std::io::stdin().read_to_string(&mut s)?;
             s.trim_end_matches(['\n', '\r']).to_string()
         }
-        (Some(_), true) => bail!("--stdin 与位置参数 VALUE 只能二选一"),
-        (None, false) => bail!("缺少 VALUE（或用 --stdin 从标准输入读取）"),
+        (Some(_), true) => {
+            bail!("--stdin and the positional VALUE argument are mutually exclusive")
+        }
+        (None, false) => bail!("missing VALUE (or use --stdin to read it from standard input)"),
     };
 
     let mut file = open_or_new(&a.file.file)?;
@@ -325,7 +329,7 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
     } else {
         None
     };
-    // 先落位，再按「有效意图」决定是否加密。
+    // Insert the line first, then let the effective intent decide whether to encrypt.
     file.upsert(&a.name, "", want_enc)?;
     let encrypt = want_enc.unwrap_or_else(|| file.should_encrypt(&a.name));
     let stored = if encrypt {
@@ -350,7 +354,7 @@ fn cmd_get(a: &GetArgs, password_stdin: bool) -> Result<()> {
     let file = EnvFile::load(&a.file.file)?;
     let var = file
         .get(&a.name)
-        .with_context(|| format!("{}: 没有变量 {}", a.file.file.display(), a.name))?;
+        .with_context(|| format!("{}: no variable named {}", a.file.file.display(), a.name))?;
     if var.is_encrypted() {
         let mut sess = Session::open(password_stdin)?;
         let pt = crypto::decrypt(sess.key()?, &a.name, &var.value)?;
@@ -366,9 +370,9 @@ fn cmd_list(a: &ListArgs) -> Result<()> {
     for path in &paths {
         if !path.exists() {
             if explicit {
-                bail!("找不到文件: {}", path.display());
+                bail!("file not found: {}", path.display());
             }
-            note!("{} 找不到 {}", yellow("⚠️"), path.display());
+            note!("{} {} not found", yellow("⚠️"), path.display());
             continue;
         }
         let file = EnvFile::load(path)?;
@@ -393,11 +397,11 @@ fn cmd_rm(a: &RmArgs) -> Result<()> {
     let mut file = EnvFile::load(&a.file.file)?;
     file.remove(&a.name)?;
     file.save()?;
-    note!("{} 已删除 {}", green("✓"), a.name);
+    note!("{} removed {}", green("✓"), a.name);
     Ok(())
 }
 
-/// 按文件顺序选出匹配任一 glob 的变量名。
+/// Pick, in file order, the variable names matching any of the globs.
 fn selected(file: &EnvFile, keys: &[String]) -> Vec<String> {
     file.vars()
         .filter(|v| keys.iter().any(|k| load::glob_match(k, &v.name)))
@@ -419,16 +423,16 @@ fn cmd_encrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
             .collect()
     };
     if names.is_empty() {
-        // 空手而归时说清原因，不然看起来像 bug。
+        // Explain an empty result, otherwise it looks like a bug.
         note!(
-            "{} {} 是 {} 模式，没有需要加密的变量",
+            "{} {} is in {} mode; nothing needs encrypting",
             dim("·"),
             a.file.file.display(),
             file.mode.as_str()
         );
         if a.keys.is_empty() && file.mode == envfile::Mode::Whitelist {
             note!(
-                "  whitelist 下只加密标了 {} 的变量；指定 {} 或在首个变量前写 {} 可改为默认加密",
+                "  under whitelist only variables marked {} are encrypted; pass {} or put {} before the first variable to encrypt by default",
                 dim("# @ENC"),
                 dim("-k '*_TOKEN'"),
                 dim("# @localenvx-mode:blacklist")
@@ -447,7 +451,7 @@ fn cmd_encrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
     }
     file.save()?;
     note!(
-        "{} 已加密 {} 项: {}",
+        "{} encrypted {} item(s): {}",
         green("✓"),
         names.len(),
         names.join(" ")
@@ -457,7 +461,9 @@ fn cmd_encrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
 
 fn cmd_decrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
     if a.keys.is_empty() {
-        bail!("decrypt 必须显式指定 -k（明文会落盘，不做全量默认）");
+        bail!(
+            "decrypt requires an explicit -k (plaintext lands on disk, so there is no bulk default)"
+        );
     }
     let mut file = EnvFile::load(&a.file.file)?;
     let names: Vec<String> = selected(&file, &a.keys)
@@ -465,7 +471,7 @@ fn cmd_decrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
         .filter(|n| file.get(n).unwrap().is_encrypted())
         .collect();
     if names.is_empty() {
-        note!("{} 没有匹配到密文变量", dim("·"));
+        note!("{} no encrypted variable matched", dim("·"));
         return Ok(());
     }
     let mut sess = Session::open(password_stdin)?;
@@ -477,7 +483,7 @@ fn cmd_decrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
     }
     file.save()?;
     note!(
-        "{} 已解密 {} 项到明文: {}",
+        "{} decrypted {} item(s) to plaintext: {}",
         yellow("⚠️"),
         names.len(),
         names.join(" ")
@@ -491,11 +497,12 @@ fn cmd_passwd(a: &PasswdArgs) -> Result<()> {
     let cfg = config::load()?;
     let old_pw = match cfg.password.as_deref() {
         Some(p) if !p.is_empty() => zeroize::Zeroizing::new(p.to_string()),
-        _ => session::prompt_password("当前密码: ")?,
+        _ => session::prompt_password("current password: ")?,
     };
     let old_key = crypto::derive_key(&old_pw, &cfg.kdf.salt, cfg.params())?;
 
-    // 先把所有密文解出来，全部成功才换密码——避免半途失败留下混合状态。
+    // Decrypt everything first and only change the password if all of it succeeded —
+    // a failure halfway through would leave a mixed state.
     type Plaintexts = Vec<(String, zeroize::Zeroizing<String>)>;
     let mut files: Vec<(EnvFile, Plaintexts)> = Vec::new();
     for path in &a.files {
@@ -527,13 +534,16 @@ fn cmd_passwd(a: &PasswdArgs) -> Result<()> {
     let stored = (!a.no_store).then(|| new_pw.to_string());
     let written = config::save(&config::Config::new(new_salt, params, stored))?;
     note!(
-        "{} 密码已更换；重加密 {count} 项，涉及 {} 个文件 {}",
+        "{} password changed; re-encrypted {count} item(s) across {} file(s) {}",
         green("✓"),
         a.files.len(),
         dim(&written.display().to_string())
     );
     if a.files.is_empty() {
-        note!("{} 没传文件：其它 .env 里的旧密文已无法解密", yellow("⚠️"));
+        note!(
+            "{} no files given: old ciphertext in other .env files can no longer be decrypted",
+            yellow("⚠️")
+        );
     }
     Ok(())
 }
