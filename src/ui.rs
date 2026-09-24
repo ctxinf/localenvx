@@ -10,11 +10,24 @@ use std::sync::Mutex;
 use tiny_http::{Header, Request, Response, Server};
 
 use crate::crypto;
-use crate::envfile::EnvFile;
+use crate::envfile::{EnvFile, Item};
 use crate::session::Session;
 use crate::term::{cyan, dim, green};
 
 const PORT_SPAN: u16 = 100;
+
+/// 内联 favicon：一把锁扣在 `$` 上。深浅色各一套，跟随系统主题。
+const FAVICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .bg { fill: #2f5ed8 }
+    .fg { fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round }
+    @media (prefers-color-scheme: dark) { .bg { fill: #7aa2f7 } .fg { stroke: #16181d } }
+  </style>
+  <rect class="bg" width="32" height="32" rx="7"/>
+  <rect class="fg" x="8" y="15" width="16" height="11" rx="2.5"/>
+  <path class="fg" d="M11.5 15v-3.5a4.5 4.5 0 0 1 9 0V15"/>
+</svg>
+"##;
 
 pub fn serve(start_port: u16, strict_port: bool, password_stdin: bool) -> Result<()> {
     let project = std::env::current_dir()?;
@@ -74,6 +87,12 @@ fn handle(req: Request, sess: &Mutex<Session>, project: &Path, origin: &str) -> 
             200,
             "text/html; charset=utf-8",
             page(project).into_bytes(),
+        ),
+        ("GET", "/favicon.svg") => respond(
+            req,
+            200,
+            "image/svg+xml; charset=utf-8",
+            FAVICON.as_bytes().to_vec(),
         ),
         ("GET", "/api/files") => {
             let files = list_env_files(project);
@@ -140,7 +159,7 @@ fn respond(req: Request, status: u16, ctype: &str, body: Vec<u8>) -> Result<()> 
         ("X-Content-Type-Options", "nosniff"),
         (
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'",
         ),
     ] {
         if let Ok(h) = Header::from_bytes(k.as_bytes(), v.as_bytes()) {
@@ -242,20 +261,29 @@ fn read_file(sess: &Mutex<Session>, project: &Path, name: &str) -> Result<serde_
         EnvFile::empty_at(&path)
     };
     let mut sess = sess.lock().unwrap();
-    let mut vars = Vec::new();
-    for v in file.vars() {
-        let value = if v.is_encrypted() {
-            crypto::decrypt(sess.key()?, &v.name, &v.value)?.to_string()
-        } else {
-            v.value.clone()
-        };
-        vars.push(serde_json::json!({
-            "name": v.name,
-            "value": value,
-            "encrypted": v.is_encrypted(),
-        }));
+    // 按行原样返回（含注释与空行），让前端能把 .env 渲染成它本来的样子。
+    let mut lines = Vec::new();
+    for item in file.items() {
+        lines.push(match item {
+            Item::Blank => serde_json::json!({ "kind": "blank" }),
+            Item::Comment(text) => serde_json::json!({ "kind": "comment", "text": text }),
+            Item::Var(v) => {
+                let value = if v.is_encrypted() {
+                    crypto::decrypt(sess.key()?, &v.name, &v.value)?.to_string()
+                } else {
+                    v.value.clone()
+                };
+                serde_json::json!({
+                    "kind": "var",
+                    "name": v.name,
+                    "value": value,
+                    "encrypted": v.is_encrypted(),
+                    "export": v.export,
+                })
+            }
+        });
     }
-    Ok(serde_json::json!({ "path": name, "mode": file.mode.as_str(), "vars": vars }))
+    Ok(serde_json::json!({ "path": name, "mode": file.mode.as_str(), "lines": lines }))
 }
 
 fn write_var(sess: &Mutex<Session>, project: &Path, v: &serde_json::Value) -> Result<()> {

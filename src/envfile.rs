@@ -72,6 +72,13 @@ enum Line {
     Var(Var),
 }
 
+/// `Line` 的只读视图，把「空行」从「注释」里分出来，方便调用方渲染。
+pub enum Item<'a> {
+    Blank,
+    Comment(&'a str),
+    Var(&'a Var),
+}
+
 pub struct EnvFile {
     pub path: PathBuf,
     pub mode: Mode,
@@ -116,6 +123,15 @@ impl EnvFile {
         };
         f.validate_directives()?;
         Ok(f)
+    }
+
+    /// 按文件顺序遍历每一行（含注释与空行）——UI 用它把 .env 原样渲染出来。
+    pub fn items(&self) -> impl Iterator<Item = Item<'_>> {
+        self.lines.iter().map(|l| match l {
+            Line::Raw(raw) if raw.trim().is_empty() => Item::Blank,
+            Line::Raw(raw) => Item::Comment(raw),
+            Line::Var(v) => Item::Var(v),
+        })
     }
 
     pub fn vars(&self) -> impl Iterator<Item = &Var> {

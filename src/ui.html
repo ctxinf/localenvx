@@ -3,27 +3,60 @@
 <head>
 <meta charset="utf-8">
 <meta name="referrer" content="no-referrer">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>localenvx — {{PROJECT}}</title>
 <style>
-  :root { color-scheme: light dark; --fg:#e6e6e6; --bg:#16181d; --mut:#8b93a1; --line:#2a2e37; --acc:#7aa2f7; }
-  @media (prefers-color-scheme: light) { :root { --fg:#1c1e24; --bg:#fbfbfd; --mut:#6b7280; --line:#e2e5ea; --acc:#2f5ed8; } }
+  :root {
+    color-scheme: light dark;
+    --fg:#e6e6e6; --bg:#16181d; --mut:#8b93a1; --line:#2a2e37; --acc:#7aa2f7;
+    --warn:#e0af68; --warn-bg:#e0af6822; --ok:#9ece6a; --ok-bg:#9ece6a1c;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --fg:#1c1e24; --bg:#fbfbfd; --mut:#6b7280; --line:#e2e5ea; --acc:#2f5ed8;
+      --warn:#9a6700; --warn-bg:#f5d90a22; --ok:#1a7f37; --ok-bg:#1a7f371a;
+    }
+  }
   * { box-sizing: border-box; }
   body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,"Noto Sans CJK SC",sans-serif; color:var(--fg); background:var(--bg); }
-  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:baseline; flex-wrap:wrap; }
+  /* 页面整体居中：header 与 main 共用同一条 --wrap 宽度 */
+  .wrap { max-width:960px; margin-inline:auto; padding-inline:24px; }
+  header { padding-block:14px; border-bottom:1px solid var(--line); }
+  header .wrap { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
   h1 { font-size:15px; margin:0; letter-spacing:.02em; }
-  .path { color:var(--mut); font-family:ui-monospace,monospace; font-size:12px; }
-  main { padding:18px 20px 60px; max-width:1000px; }
+  .path { color:var(--mut); font-family:ui-monospace,monospace; font-size:12px; margin-right:auto; }
+  main { padding-block:18px 60px; }
   select, input, button { font:inherit; color:inherit; background:transparent; border:1px solid var(--line); border-radius:6px; padding:6px 9px; }
   button { cursor:pointer; }
   button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+  svg { display:block; }
   table { width:100%; border-collapse:collapse; margin-top:14px; }
   th { text-align:left; font-weight:500; color:var(--mut); font-size:12px; padding:6px 8px; border-bottom:1px solid var(--line); }
   td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
   td.name { font-family:ui-monospace,monospace; white-space:nowrap; }
   .val { font-family:ui-monospace,monospace; cursor:pointer; color:var(--mut); word-break:break-all; }
   .val.shown { color:var(--fg); }
-  .tag { font-size:11px; padding:1px 6px; border-radius:99px; border:1px solid var(--line); color:var(--mut); }
+  .th-val { display:flex; align-items:center; gap:6px; }
+  /* 注释行与空行：无边框、等宽、暗色，读起来就是 .env 原文 */
+  tr.cmt td { border-bottom:none; padding:2px 8px; color:var(--mut); font-family:ui-monospace,monospace;
+              font-size:12.5px; white-space:pre-wrap; word-break:break-all; }
+  tr.cmt.directive td { color:var(--acc); }
+  tr.gap td { border-bottom:none; padding:0; height:10px; }
+  .val-cell { display:flex; align-items:center; gap:8px; }
+  .copy { border:none; padding:3px; color:var(--mut); border-radius:4px; flex:none; opacity:0; transition:opacity .12s; }
+  tr:hover .copy, .copy:focus-visible, .copy.ok { opacity:1; }
+  .copy:hover { color:var(--fg); background:var(--line); }
+  .copy.ok { color:var(--ok); }
+  .eye { border:none; padding:2px; color:var(--mut); border-radius:4px; }
+  .eye:hover { color:var(--fg); background:var(--line); }
+  .eye.on { color:var(--acc); }
+  .tag { display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 7px; border-radius:99px; border:1px solid var(--line); color:var(--mut); }
   .tag.enc { color:var(--acc); border-color:var(--acc); }
+  /* 文件模式要一眼看清：blacklist=默认加密（安全），whitelist=默认明文（要当心） */
+  .mode { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600;
+          letter-spacing:.04em; text-transform:uppercase; padding:3px 9px; border-radius:99px; border:1px solid transparent; }
+  .mode.blacklist { color:var(--ok);   background:var(--ok-bg);   border-color:var(--ok); }
+  .mode.whitelist { color:var(--warn); background:var(--warn-bg); border-color:var(--warn); }
   .row-actions button { border:none; color:var(--mut); padding:4px 6px; }
   #msg { margin-top:12px; color:var(--mut); min-height:1.4em; }
   form.add { margin-top:20px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
@@ -32,14 +65,20 @@
 </head>
 <body>
 <header>
-  <h1>localenvx</h1>
-  <span class="path">{{PROJECT}}</span>
-  <select id="file"></select>
-  <span class="tag" id="mode"></span>
+  <div class="wrap">
+    <h1>localenvx</h1>
+    <span class="path">{{PROJECT}}</span>
+    <select id="file"></select>
+    <span class="mode" id="mode" title=""></span>
+  </div>
 </header>
-<main>
+<main class="wrap">
   <table>
-    <thead><tr><th>变量</th><th>值（点击显形）</th><th>状态</th><th></th></tr></thead>
+    <thead><tr>
+      <th>变量</th>
+      <th><span class="th-val">值<button class="eye" id="eye" type="button" title="全部显形/隐藏" aria-pressed="false"></button></span></th>
+      <th>状态</th><th></th>
+    </tr></thead>
     <tbody id="rows"></tbody>
   </table>
 
@@ -57,7 +96,34 @@
 </main>
 <script>
 const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
 const msg = t => { $('#msg').textContent = t || ''; };
+const DOTS = '••••••';
+
+const ICON = {
+  eye:     '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 12S5 5.5 12 5.5 22.5 12 22.5 12 19 18.5 12 18.5 1.5 12 1.5 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>',
+  eyeOff:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 5.7A10.4 10.4 0 0 1 12 5.5c7 0 10.5 6.5 10.5 6.5a19 19 0 0 1-3.4 4.3M6.3 7.7A18.6 18.6 0 0 0 1.5 12S5 18.5 12 18.5c1.8 0 3.4-.4 4.7-1"/><path d="M10 10a3.2 3.2 0 0 0 4.3 4.3"/><path d="M3 3l18 18"/></svg>',
+  copy:    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M15 5.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h.5"/></svg>',
+  check:   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5 9.5 18 20 6.5"/></svg>',
+  lock:    '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>',
+  unlock:  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 7.5-2"/></svg>',
+};
+
+// 全局显形开关：默认关（防截图 / 屏幕共享泄露）
+let revealAll = false;
+function paintEye() {
+  const btn = $('#eye');
+  btn.innerHTML = revealAll ? ICON.eye : ICON.eyeOff;
+  btn.classList.toggle('on', revealAll);
+  btn.setAttribute('aria-pressed', String(revealAll));
+  btn.title = revealAll ? '隐藏全部值' : '显示全部值';
+}
+function applyReveal() {
+  $$('.val').forEach(el => {
+    el.classList.toggle('shown', revealAll);
+    el.textContent = revealAll ? el.dataset.value : DOTS;
+  });
+}
 
 async function api(path, opts) {
   const r = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
@@ -81,10 +147,42 @@ async function loadFiles() {
 async function loadFile() {
   const path = $('#file').value || '.env';
   const j = await api('/api/file?path=' + encodeURIComponent(path));
-  $('#mode').textContent = j.mode;
+
+  const mode = $('#mode');
+  mode.className = 'mode ' + j.mode;
+  mode.innerHTML = (j.mode === 'blacklist' ? ICON.lock : ICON.unlock) + '<span>' + j.mode + '</span>';
+  mode.title = j.mode === 'blacklist'
+    ? '默认加密：无标记的变量都会被加密，需 # @PLAIN 显式豁免'
+    : '默认明文：只有标了 # @ENC 的变量才加密';
+
   const rows = $('#rows'); rows.innerHTML = '';
-  j.vars.forEach(v => rows.append(row(path, v)));
-  if (!j.vars.length) msg('（这个文件还没有变量）'); else msg('');
+  j.lines.forEach(l => {
+    rows.append(l.kind === 'var' ? row(path, l) : l.kind === 'comment' ? commentRow(l.text) : blankRow());
+  });
+  applyReveal();
+  const n = j.lines.filter(l => l.kind === 'var').length;
+  msg(n ? '' : '（这个文件还没有变量）');
+}
+
+/// 注释行原样渲染 —— 让页面读起来跟 .env 文本本身一样。
+function commentRow(text) {
+  const tr = document.createElement('tr');
+  tr.className = 'cmt';
+  const td = document.createElement('td');
+  td.colSpan = 4;
+  td.textContent = text;
+  // @ENC / @PLAIN / @localenvx-mode: 是有语义的指令，不是普通注释
+  if (/@ENC\b|@PLAIN\b|@localenvx-mode:/.test(text)) tr.classList.add('directive');
+  tr.append(td);
+  return tr;
+}
+
+function blankRow() {
+  const tr = document.createElement('tr');
+  tr.className = 'gap';
+  const td = document.createElement('td'); td.colSpan = 4;
+  tr.append(td);
+  return tr;
 }
 
 function row(path, v) {
@@ -93,18 +191,37 @@ function row(path, v) {
   const name = document.createElement('td'); name.className = 'name'; name.textContent = v.name;
 
   const val = document.createElement('td');
+  const cell = document.createElement('div'); cell.className = 'val-cell';
   const span = document.createElement('span');
-  span.className = 'val'; span.textContent = '••••••'; span.title = '点击显形/隐藏';
+  span.className = 'val'; span.textContent = DOTS; span.title = '点击显形/隐藏';
+  span.dataset.value = v.value;               // 单行仍可独立点开
   span.onclick = () => {
     const shown = span.classList.toggle('shown');
-    span.textContent = shown ? v.value : '••••••';
+    span.textContent = shown ? v.value : DOTS;
   };
-  val.append(span);
+
+  // 复制不需要先显形——值一直在 DOM 里，显形只是防肩窥/截图
+  const copy = document.createElement('button');
+  copy.className = 'copy'; copy.type = 'button';
+  copy.innerHTML = ICON.copy; copy.title = '复制值到剪贴板';
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(v.value);
+      copy.innerHTML = ICON.check; copy.classList.add('ok');
+      msg('已复制 ' + v.name + ' 到剪贴板');
+      setTimeout(() => { copy.innerHTML = ICON.copy; copy.classList.remove('ok'); }, 1200);
+    } catch (e) {
+      msg('复制失败: ' + e.message);
+    }
+  };
+
+  cell.append(span, copy);
+  val.append(cell);
 
   const st = document.createElement('td');
   const tag = document.createElement('span');
   tag.className = 'tag' + (v.encrypted ? ' enc' : '');
-  tag.textContent = v.encrypted ? '🔒 encrypted' : 'plain';
+  tag.innerHTML = v.encrypted ? ICON.lock + ' encrypted' : 'plain';
   st.append(tag);
 
   const act = document.createElement('td'); act.className = 'row-actions';
@@ -133,6 +250,9 @@ async function save(path, name, value, enc) {
     msg('已写入 ' + name);
   } catch (e) { msg('失败: ' + e.message); }
 }
+
+$('#eye').onclick = () => { revealAll = !revealAll; paintEye(); applyReveal(); };
+paintEye();
 
 $('#file').onchange = loadFile;
 $('#add').onsubmit = async e => {
