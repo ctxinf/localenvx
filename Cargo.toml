@@ -1,0 +1,29 @@
+[package]
+name = "localenvx"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.85"
+description = "本地开发用的加密环境变量管理工具：磁盘上没有明文机密"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+clap = { version = "4", features = ["derive"] }
+getrandom = "0.3"
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+tiny_http = "0.12"
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

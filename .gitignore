@@ -1,0 +1,16 @@
+/target/
+**/*.rs.bk
+*.pdb
+
+# 绝不入库的本地机密
+.env
+.env.*
+!.env.example
+!.env.sample
+config.toml
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp

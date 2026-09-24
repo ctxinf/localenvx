@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>localenvx — {{PROJECT}}</title>
+<style>
+  :root { color-scheme: light dark; --fg:#e6e6e6; --bg:#16181d; --mut:#8b93a1; --line:#2a2e37; --acc:#7aa2f7; }
+  @media (prefers-color-scheme: light) { :root { --fg:#1c1e24; --bg:#fbfbfd; --mut:#6b7280; --line:#e2e5ea; --acc:#2f5ed8; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,"Noto Sans CJK SC",sans-serif; color:var(--fg); background:var(--bg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:baseline; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; letter-spacing:.02em; }
+  .path { color:var(--mut); font-family:ui-monospace,monospace; font-size:12px; }
+  main { padding:18px 20px 60px; max-width:1000px; }
+  select, input, button { font:inherit; color:inherit; background:transparent; border:1px solid var(--line); border-radius:6px; padding:6px 9px; }
+  button { cursor:pointer; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+  table { width:100%; border-collapse:collapse; margin-top:14px; }
+  th { text-align:left; font-weight:500; color:var(--mut); font-size:12px; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  td.name { font-family:ui-monospace,monospace; white-space:nowrap; }
+  .val { font-family:ui-monospace,monospace; cursor:pointer; color:var(--mut); word-break:break-all; }
+  .val.shown { color:var(--fg); }
+  .tag { font-size:11px; padding:1px 6px; border-radius:99px; border:1px solid var(--line); color:var(--mut); }
+  .tag.enc { color:var(--acc); border-color:var(--acc); }
+  .row-actions button { border:none; color:var(--mut); padding:4px 6px; }
+  #msg { margin-top:12px; color:var(--mut); min-height:1.4em; }
+  form.add { margin-top:20px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  form.add input[name=name] { width:220px; } form.add input[name=value] { flex:1; min-width:240px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>localenvx</h1>
+  <span class="path">{{PROJECT}}</span>
+  <select id="file"></select>
+  <span class="tag" id="mode"></span>
+</header>
+<main>
+  <table>
+    <thead><tr><th>变量</th><th>值（点击显形）</th><th>状态</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <form class="add" id="add" autocomplete="off">
+    <input name="name" placeholder="NAME" required pattern="[A-Za-z_][A-Za-z0-9_]*">
+    <input name="value" placeholder="value" required>
+    <select name="enc">
+      <option value="auto">按文件模式</option>
+      <option value="enc">强制加密</option>
+      <option value="plain">强制明文</option>
+    </select>
+    <button class="primary" type="submit">写入</button>
+  </form>
+  <div id="msg"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const msg = t => { $('#msg').textContent = t || ''; };
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.status);
+  return j;
+}
+
+async function loadFiles() {
+  const j = await api('/api/files');
+  const sel = $('#file');
+  const keep = sel.value;
+  sel.innerHTML = '';
+  (j.files.length ? j.files : ['.env']).forEach(f => {
+    const o = document.createElement('option'); o.value = o.textContent = f; sel.append(o);
+  });
+  if (keep && j.files.includes(keep)) sel.value = keep;
+  await loadFile();
+}
+
+async function loadFile() {
+  const path = $('#file').value || '.env';
+  const j = await api('/api/file?path=' + encodeURIComponent(path));
+  $('#mode').textContent = j.mode;
+  const rows = $('#rows'); rows.innerHTML = '';
+  j.vars.forEach(v => rows.append(row(path, v)));
+  if (!j.vars.length) msg('（这个文件还没有变量）'); else msg('');
+}
+
+function row(path, v) {
+  const tr = document.createElement('tr');
+
+  const name = document.createElement('td'); name.className = 'name'; name.textContent = v.name;
+
+  const val = document.createElement('td');
+  const span = document.createElement('span');
+  span.className = 'val'; span.textContent = '••••••'; span.title = '点击显形/隐藏';
+  span.onclick = () => {
+    const shown = span.classList.toggle('shown');
+    span.textContent = shown ? v.value : '••••••';
+  };
+  val.append(span);
+
+  const st = document.createElement('td');
+  const tag = document.createElement('span');
+  tag.className = 'tag' + (v.encrypted ? ' enc' : '');
+  tag.textContent = v.encrypted ? '🔒 encrypted' : 'plain';
+  st.append(tag);
+
+  const act = document.createElement('td'); act.className = 'row-actions';
+  const edit = document.createElement('button'); edit.textContent = '改';
+  edit.onclick = async () => {
+    const nv = prompt('新值 — ' + v.name, v.value);
+    if (nv === null) return;
+    await save(path, v.name, nv, v.encrypted ? 'enc' : 'plain');
+  };
+  const del = document.createElement('button'); del.textContent = '删';
+  del.onclick = async () => {
+    if (!confirm('删除 ' + v.name + ' ?')) return;
+    try { await api('/api/rm', { method: 'POST', body: JSON.stringify({ path, name: v.name }) }); await loadFile(); msg('已删除 ' + v.name); }
+    catch (e) { msg('失败: ' + e.message); }
+  };
+  act.append(edit, del);
+
+  tr.append(name, val, st, act);
+  return tr;
+}
+
+async function save(path, name, value, enc) {
+  try {
+    await api('/api/set', { method: 'POST', body: JSON.stringify({ path, name, value, enc }) });
+    await loadFile();
+    msg('已写入 ' + name);
+  } catch (e) { msg('失败: ' + e.message); }
+}
+
+$('#file').onchange = loadFile;
+$('#add').onsubmit = async e => {
+  e.preventDefault();
+  const f = e.target;
+  await save($('#file').value, f.name.value, f.value.value, f.enc.value);
+  f.value.value = '';
+};
+loadFiles().catch(e => msg('加载失败: ' + e.message));
+</script>
+</body>
+</html>
