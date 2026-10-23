@@ -49,11 +49,30 @@ fn expression(expression: &str) -> (&str, &str, &str) {
 
 pub fn referenced_names(text: &str) -> Vec<String> {
     let mut names = Vec::new();
-    let mut from = 0;
-    while let Some((_, end, expr)) = reference(text, from) {
-        let (key, _, _) = expression(expr);
-        names.push(key.to_string());
-        from = end;
+    for (start, ch) in text.char_indices() {
+        if ch != '$' || (start > 0 && text.as_bytes()[start - 1] == b'\\') {
+            continue;
+        }
+        let rest = &text[start + 1..];
+        if let Some(braced) = rest.strip_prefix('{') {
+            let mut depth = 1;
+            for (i, ch) in braced.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    names.push(expression(&braced[..i]).0.to_string());
+                    break;
+                }
+            }
+        } else if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+            let len = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            names.push(rest[..len].to_string());
+        }
     }
     names
 }
@@ -158,6 +177,15 @@ mod tests {
             .map(|(k, v)| (k.to_string(), Zeroizing::new(v.to_string())))
             .collect()
     }
+    #[test]
+    fn nested_defaults_keep_all_potential_decryption_dependencies() {
+        assert_eq!(
+            referenced_names("${SECRET:-${OTHER:-fallback}}"),
+            ["SECRET", "OTHER"]
+        );
+        assert!(referenced_names(r"\$SECRET").is_empty());
+    }
+
     #[test]
     fn matches_pinned_dotenv_expand_oracle() {
         let cases: serde_json::Value =
