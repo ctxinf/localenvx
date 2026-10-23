@@ -109,6 +109,30 @@ fn select_files(out: &mut Loaded, files: &[EnvFile], override_env: bool) {
     }
 }
 
+pub fn planned_paths(files: &[PathBuf], cascade: Option<&str>) -> Vec<PathBuf> {
+    let (bases, _) = default_paths(files);
+    bases
+        .into_iter()
+        .flat_map(|base| {
+            let suffix = |suffix: &str| {
+                let mut path = base.as_os_str().to_os_string();
+                path.push(suffix);
+                PathBuf::from(path)
+            };
+            match cascade {
+                Some("") => vec![suffix(".local"), base],
+                Some(environment) => vec![
+                    suffix(&format!(".{environment}.local")),
+                    suffix(".local"),
+                    suffix(&format!(".{environment}")),
+                    base,
+                ],
+                None => vec![base],
+            }
+        })
+        .collect()
+}
+
 pub fn default_paths(files: &[PathBuf]) -> (Vec<PathBuf>, bool) {
     if files.is_empty() {
         (vec![PathBuf::from(".env")], false)
@@ -139,6 +163,26 @@ pub fn path_label(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::glob_match;
+
+    #[test]
+    fn cascade_paths_follow_dotenv_order() {
+        use super::*;
+        let paths = planned_paths(&[PathBuf::from("config.vars")], Some("test"));
+        assert_eq!(
+            paths,
+            [
+                "config.vars.test.local",
+                "config.vars.local",
+                "config.vars.test",
+                "config.vars"
+            ]
+            .map(PathBuf::from)
+        );
+        assert_eq!(
+            planned_paths(&[], Some("")),
+            [".env.local", ".env"].map(PathBuf::from)
+        );
+    }
 
     #[test]
     fn file_precedence_and_duplicate_resolution() {

@@ -89,6 +89,9 @@ struct EnvArgs {
     /// Override the process environment and let later files win
     #[arg(short = 'o', long = "override", global = true)]
     r#override: bool,
+    /// Cascade candidates: environment.local, local, environment, base
+    #[arg(short = 'c', global = true, num_args = 0..=1, default_missing_value = "", conflicts_with = "override")]
+    cascade: Option<String>,
 }
 
 #[derive(Args)]
@@ -240,10 +243,22 @@ fn cmd_init(a: &InitArgs) -> Result<()> {
 // ── F2/F3/F4 run ─────────────────────────────────────────────────────────────
 
 fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
-    let (paths, _explicit) = load::default_paths(&env.files);
+    let paths = load::planned_paths(&env.files, env.cascade.as_deref());
     let mut sess = Session::open(password_stdin)?;
-    let loaded = load::load_files(&mut sess, &paths, false, env.r#override, &[])?;
+    let loaded = load::load_files(
+        &mut sess,
+        &paths,
+        env.cascade.is_some(),
+        env.r#override,
+        &[],
+    )?;
 
+    if env.cascade.is_some() && loaded.files.is_empty() {
+        eprintln!(
+            "{} no cascade candidates found; continuing with the process environment",
+            yellow("warn:")
+        );
+    }
     for m in &loaded.missing {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
     }
@@ -371,9 +386,21 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
 }
 
 fn cmd_get(a: &GetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
-    let (paths, _explicit) = load::default_paths(&env.files);
+    let paths = load::planned_paths(&env.files, env.cascade.as_deref());
     let mut sess = Session::open(password_stdin)?;
-    let loaded = load::load_files(&mut sess, &paths, false, env.r#override, &[])?;
+    let loaded = load::load_files(
+        &mut sess,
+        &paths,
+        env.cascade.is_some(),
+        env.r#override,
+        &[],
+    )?;
+    if env.cascade.is_some() && loaded.files.is_empty() {
+        eprintln!(
+            "{} no cascade candidates found; continuing with the process environment",
+            yellow("warn:")
+        );
+    }
     for m in &loaded.missing {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
     }
