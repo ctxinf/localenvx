@@ -92,6 +92,20 @@ struct EnvArgs {
     /// Cascade candidates: environment.local, local, environment, base
     #[arg(short = 'c', global = true, num_args = 0..=1, default_missing_value = "", conflicts_with = "override")]
     cascade: Option<String>,
+    /// Temporary NAME=value (repeatable, applied last without expansion)
+    #[arg(short = 'v', global = true, value_parser = parse_variable)]
+    variables: Vec<(String, String)>,
+}
+
+fn parse_variable(input: &str) -> std::result::Result<(String, String), String> {
+    let (name, value) = input.split_once('=').ok_or("expected NAME=value")?;
+    if name.is_empty()
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || value.is_empty()
+    {
+        return Err("expected a word variable name and nonempty value (NAME=value)".into());
+    }
+    Ok((name.into(), value.into()))
 }
 
 #[derive(Args)]
@@ -250,7 +264,7 @@ fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
         &paths,
         env.cascade.is_some(),
         env.r#override,
-        &[],
+        &env.variables,
     )?;
 
     if env.cascade.is_some() && loaded.files.is_empty() {
@@ -278,6 +292,7 @@ fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
             );
         }
     }
+    cmd.envs(env.variables.iter().map(|(name, value)| (name, value)));
     exec(cmd, &a.cmd[0].to_string_lossy())
 }
 
@@ -393,7 +408,7 @@ fn cmd_get(a: &GetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
         &paths,
         env.cascade.is_some(),
         env.r#override,
-        &[],
+        &env.variables,
     )?;
     if env.cascade.is_some() && loaded.files.is_empty() {
         eprintln!(
@@ -403,6 +418,10 @@ fn cmd_get(a: &GetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
     }
     for m in &loaded.missing {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
+    }
+    if let Some((_, value)) = env.variables.iter().rev().find(|(name, _)| *name == a.name) {
+        println!("{value}");
+        return Ok(());
     }
     let file_value = loaded.entries.iter().find(|e| e.name == a.name);
     let process_value = std::env::var_os(&a.name);
