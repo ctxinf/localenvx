@@ -8,6 +8,7 @@
 !.env.example
 !.env.sample
 config.toml
+.localenvx/
 
 # Editors / OS
 .DS_Store

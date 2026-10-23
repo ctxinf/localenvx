@@ -474,3 +474,78 @@ fn process_environment_dependencies_are_lazy_too() {
     success(&output);
     assert_eq!(text(&output), "ok\n");
 }
+
+#[test]
+fn user_credentials_win_and_project_credentials_are_a_fallback() {
+    let p = Project::new();
+    let file = p.fixture("nested", "");
+    let project_dir = p.0.join(".localenvx");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::copy(p.0.join("config.toml"), project_dir.join("config.toml")).unwrap();
+    // Deliberately invalid user config must fail rather than silently falling back.
+    let user_dir = p.0.join("user");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    let command = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_localenvx"));
+        cmd.current_dir(file.parent().unwrap())
+            .env_clear()
+            .env("LOCALENVX_CONFIG_DIR", &user_dir)
+            .args(["-e", path(&file)]);
+        cmd
+    };
+    let output = command()
+        .args(["set", "A", "synthetic", "--enc", "-y"])
+        .output()
+        .unwrap();
+    success(&output);
+    let output = command().args(["get", "A"]).output().unwrap();
+    success(&output);
+    assert_eq!(text(&output), "synthetic\n");
+    std::fs::copy(p.0.join("config.toml"), user_dir.join("config.toml")).unwrap();
+    std::fs::write(user_dir.join("config.toml"), "invalid config").unwrap();
+    let output = command().args(["get", "A"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to parse"));
+    // Explicit selection takes precedence even when the user config is invalid.
+    let output = command()
+        .args([
+            "--config-file",
+            path(&project_dir.join("config.toml")),
+            "get",
+            "A",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+}
+
+#[test]
+fn project_initialization_is_explicit_and_does_not_replace_user_credentials() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let p = Project::new();
+    let user_dir = p.0.join("user");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_localenvx"));
+    let mut child = cmd
+        .current_dir(&p.0)
+        .env_clear()
+        .env("LOCALENVX_CONFIG_DIR", &user_dir)
+        .args(["init", "--project"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"synthetic-project-password\n")
+        .unwrap();
+    success(&child.wait_with_output().unwrap());
+    assert!(p.0.join(".localenvx/config.toml").is_file());
+    assert!(!user_dir.exists());
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("already exists"));
+}

@@ -1,4 +1,4 @@
-//! ~/.config/localenvx/config.toml — salt, KDF parameters and (optionally) the password.
+//! User and project credentials: salt, KDF parameters and optionally the password.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,24 @@ pub fn config_path() -> Result<PathBuf> {
     if let Some(path) = SELECTED_PATH.with(|selected| selected.borrow().clone()) {
         return Ok(path);
     }
-    Ok(config_dir()?.join("config.toml"))
+    resolve_path(
+        &config_dir()?.join("config.toml"),
+        &std::env::current_dir()?,
+    )
+}
+
+/// Resolve whole credential files; never mix a password with another file's salt.
+fn resolve_path(user: &Path, cwd: &Path) -> Result<PathBuf> {
+    if user.try_exists()? {
+        return Ok(user.to_path_buf());
+    }
+    for dir in cwd.ancestors() {
+        let project = dir.join(".localenvx/config.toml");
+        if project.try_exists()? {
+            return Ok(project);
+        }
+    }
+    Ok(user.to_path_buf())
 }
 
 pub fn load() -> Result<Config> {

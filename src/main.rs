@@ -32,9 +32,12 @@ struct Cli {
     /// Read the password from stdin (highest precedence)
     #[arg(long, global = true)]
     password_stdin: bool,
-    /// Credential config path (overrides the default config location)
-    #[arg(long, global = true)]
+    /// Credential config path (overrides user and project credentials)
+    #[arg(long, global = true, conflicts_with = "project")]
     config_file: Option<PathBuf>,
+    /// Use credentials in the current directory's .localenvx/config.toml
+    #[arg(long, global = true)]
+    project: bool,
     /// Silence summaries (run/get default to true); use --quiet=false for details
     #[arg(long, short, global = true, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     quiet: Option<bool>,
@@ -217,7 +220,15 @@ fn dispatch(cli: &Cli) -> Result<()> {
         );
         return Ok(());
     }
-    config::select_path(cli.config_file.clone());
+    let selected = if cli.project {
+        Some(std::env::current_dir()?.join(".localenvx/config.toml"))
+    } else if cli.config_file.is_none() && matches!(cli.cmd, Some(Cmd::Init(_))) {
+        // Initialization remains user-scoped unless a destination is explicit.
+        Some(config::config_dir()?.join("config.toml"))
+    } else {
+        cli.config_file.clone()
+    };
+    config::select_path(selected);
     match cli.cmd.as_ref() {
         Some(Cmd::External(cmd)) => {
             cmd_run(&RunArgs { cmd: cmd.clone() }, &cli.env, cli.password_stdin)
