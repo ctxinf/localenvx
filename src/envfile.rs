@@ -52,6 +52,7 @@ pub enum Quote {
     None,
     Single,
     Double,
+    Backtick,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +62,7 @@ pub struct Var {
     pub value: String,
     pub quote: Quote,
     pub export: bool,
+    original: Option<String>,
     indent: String,
     space_after_eq: String,
     /// Trailing content such as an inline comment, kept verbatim.
@@ -108,11 +110,36 @@ impl EnvFile {
         let body = text.strip_suffix('\n').unwrap_or(text);
         let mut lines: Vec<Line> = Vec::new();
         if !(text.is_empty()) {
-            for raw in body.split('\n') {
-                lines.push(match parse_var_line(raw) {
+            let raw_lines: Vec<&str> = body.split('\n').collect();
+            let mut i = 0;
+            while i < raw_lines.len() {
+                let mut raw = raw_lines[i].to_string();
+                if let Some((_, _, _, value)) = var_header(&raw) {
+                    if let Some('"' | '\'' | '`') = value.trim_start().chars().next() {
+                        let mut candidate = raw.clone();
+                        let mut end = i;
+                        loop {
+                            if let Some(v) = parse_var_line(&candidate) {
+                                if v.quote != Quote::None {
+                                    raw = candidate;
+                                    i = end;
+                                    break;
+                                }
+                            }
+                            end += 1;
+                            if end == raw_lines.len() {
+                                break;
+                            }
+                            candidate.push('\n');
+                            candidate.push_str(raw_lines[end]);
+                        }
+                    }
+                }
+                lines.push(match parse_var_line(&raw) {
                     Some(v) => Line::Var(v),
-                    None => Line::Raw(raw.to_string()),
+                    None => Line::Raw(raw),
                 });
+                i += 1;
             }
         }
         let mode = detect_mode(&lines, path)?;
@@ -231,6 +258,7 @@ impl EnvFile {
             .index_of(name)
             .with_context(|| format!("{}: no variable named {name}", self.path.display()))?;
         if let Line::Var(v) = &mut self.lines[idx] {
+            v.original = None;
             v.value = value.to_string();
             if v.quote == Quote::None && needs_quote(value) {
                 v.quote = Quote::Double;
@@ -252,6 +280,7 @@ impl EnvFile {
                 value: value.to_string(),
                 quote,
                 export: false,
+                original: None,
                 indent: String::new(),
                 space_after_eq: String::new(),
                 trailing: String::new(),
@@ -354,6 +383,18 @@ impl EnvFile {
     pub fn save(&self) -> Result<()> {
         use std::io::Write;
         let text = self.render();
+        let reparsed = Self::from_str_at(&text, &self.path)?;
+        if self.vars().map(|v| (&v.name, &v.value)).collect::<Vec<_>>()
+            != reparsed
+                .vars()
+                .map(|v| (&v.name, &v.value))
+                .collect::<Vec<_>>()
+        {
+            bail!(
+                "{}: value cannot be represented losslessly in dotenv syntax",
+                self.path.display()
+            );
+        }
         let tmp = self.path.with_extension(format!(
             "{}.localenvx.tmp",
             self.path
@@ -386,14 +427,34 @@ impl Var {
     }
 
     fn render(&self) -> String {
+        if let Some(original) = &self.original {
+            return original.clone();
+        }
         let quote = match self.quote {
             Quote::None if needs_quote(&self.value) => Quote::Double,
             q => q,
+        };
+        let quote = if match quote {
+            Quote::Single => self.value.contains('\''),
+            Quote::Double => self.value.contains('"'),
+            Quote::Backtick => self.value.contains('`'),
+            Quote::None => false,
+        } {
+            if !self.value.contains('\'') {
+                Quote::Single
+            } else if !self.value.contains('`') {
+                Quote::Backtick
+            } else {
+                Quote::Double
+            }
+        } else {
+            quote
         };
         let value = match quote {
             Quote::None => self.value.clone(),
             Quote::Single => format!("'{}'", self.value),
             Quote::Double => format!("\"{}\"", escape_double(&self.value)),
+            Quote::Backtick => format!("`{}`", self.value),
         };
         format!(
             "{}{}{}={}{}{}",
@@ -413,37 +474,15 @@ fn needs_quote(v: &str) -> bool {
 }
 
 fn escape_double(v: &str) -> String {
-    let mut s = String::with_capacity(v.len());
-    for c in v.chars() {
-        match c {
-            '"' => s.push_str("\\\""),
-            '\\' => s.push_str("\\\\"),
-            '\n' => s.push_str("\\n"),
-            '\r' => s.push_str("\\r"),
-            '\t' => s.push_str("\\t"),
-            c => s.push(c),
-        }
-    }
-    s
+    v.replace('\n', "\\n").replace('\r', "\\r")
 }
 
 fn unescape_double(v: &str) -> String {
-    let mut out = String::with_capacity(v.len());
-    let mut it = v.chars();
-    while let Some(c) = it.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match it.next() {
-            Some('n') => out.push('\n'),
-            Some('r') => out.push('\r'),
-            Some('t') => out.push('\t'),
-            Some(other) => out.push(other),
-            None => out.push('\\'),
-        }
-    }
-    out
+    v.replace(
+        "\\n", "
+",
+    )
+    .replace("\\r", "\r")
 }
 
 /// `# @localenvx-mode:` only takes effect before the first variable; later occurrences are ignored.
@@ -481,85 +520,86 @@ fn detect_mode(lines: &[Line], path: &Path) -> Result<Mode> {
     Ok(mode.unwrap_or(Mode::DEFAULT))
 }
 
-fn parse_var_line(raw: &str) -> Option<Var> {
-    let indent_len = raw.len() - raw.trim_start().len();
-    let indent = raw[..indent_len].to_string();
-    let mut rest = &raw[indent_len..];
-    if rest.starts_with('#') || rest.trim().is_empty() {
-        return None;
-    }
-    let export = if let Some(r) = rest.strip_prefix("export ") {
-        rest = r.trim_start();
-        true
+/// Return the formatting prefix, key, export flag and raw value.
+fn var_header(raw: &str) -> Option<(&str, &str, bool, &str)> {
+    let rest = raw.trim_start_matches([' ', '\t', '\u{feff}']);
+    let indent = &raw[..raw.len() - rest.len()];
+    let (rest, export) = if rest.starts_with("export") && rest[6..].starts_with(char::is_whitespace)
+    {
+        (rest[6..].trim_start(), true)
     } else {
-        false
+        (rest, false)
     };
-    let eq = rest.find('=')?;
-    let name = &rest[..eq];
-    if name.is_empty() || !name.chars().next()?.is_ascii_alphabetic() && !name.starts_with('_') {
+    let key_end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
+        .unwrap_or(rest.len());
+    if key_end == 0 {
         return None;
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    let name = &rest[..key_end];
+    let separator = rest[key_end..].trim_start_matches([' ', '\t']);
+    let value = if let Some(value) = separator.strip_prefix('=') {
+        value
+    } else if rest[key_end..].starts_with(':')
+        && rest[key_end + 1..].starts_with(char::is_whitespace)
+    {
+        &rest[key_end + 1..]
+    } else {
         return None;
-    }
-    let after = &rest[eq + 1..];
-    let space_len = after.len() - after.trim_start_matches([' ', '\t']).len();
-    let space_after_eq = after[..space_len].to_string();
-    let body = &after[space_len..];
+    };
+    Some((indent, name, export, value))
+}
 
-    let (quote, value, trailing) = match body.chars().next() {
-        Some(q @ ('"' | '\'')) => {
-            let bytes = body.as_bytes();
-            let mut i = 1;
-            let mut end = None;
-            while i < bytes.len() {
-                let c = bytes[i] as char;
-                if c == '\\' && q == '"' {
-                    i += 2;
-                    continue;
-                }
-                if c == q {
-                    end = Some(i);
-                    break;
-                }
-                i += 1;
+fn parse_var_line(raw: &str) -> Option<Var> {
+    let (indent, name, export, after) = var_header(raw)?;
+    let body = after.trim_start_matches([' ', '\t']);
+    let space_after_eq = after[..after.len() - body.len()].to_string();
+    let mut quoted = None;
+    if let Some(q @ ('"' | '\'' | '`')) = body.chars().next() {
+        for (i, c) in body.char_indices().skip(1) {
+            if c != q {
+                continue;
             }
-            let end = end?; // Unterminated quote: not a variable line, keep it verbatim
-            let inner = &body[1..end];
-            let value = if q == '"' {
-                unescape_double(inner)
-            } else {
-                inner.to_string()
-            };
-            let quote = if q == '"' {
-                Quote::Double
-            } else {
-                Quote::Single
-            };
-            (quote, value, body[end + 1..].to_string())
+            let tail = &body[i + 1..];
+            if tail.trim().is_empty() || tail.trim_start().starts_with('#') {
+                quoted = Some((q, i));
+                break;
+            }
+            if !body[..i].ends_with('\\') {
+                break;
+            }
         }
-        _ => {
-            let cut = body
-                .char_indices()
-                .find(|(i, c)| *c == '#' && (*i == 0 || body[..*i].ends_with([' ', '\t'])))
-                .map(|(i, _)| i)
-                .unwrap_or(body.len());
-            let head = &body[..cut];
-            let value = head.trim_end();
-            (
-                Quote::None,
-                value.to_string(),
-                body[value.len()..].to_string(),
-            )
-        }
+    }
+    let (quote, value, trailing) = if let Some((q, end)) = quoted {
+        let inner = body[1..end].replace("\r\n", "\n").replace('\r', "\n");
+        let value = if q == '"' {
+            unescape_double(&inner)
+        } else {
+            inner
+        };
+        let quote = match q {
+            '"' => Quote::Double,
+            '\'' => Quote::Single,
+            _ => Quote::Backtick,
+        };
+        (quote, value, body[end + 1..].to_string())
+    } else {
+        let end = body.find(['#', '\r', '\n']).unwrap_or(body.len());
+        let value = body[..end].trim_end();
+        let value = if body.starts_with('"') {
+            unescape_double(value)
+        } else {
+            value.to_string()
+        };
+        (Quote::None, value, body[end..].to_string())
     };
-
     Some(Var {
         name: name.to_string(),
         value,
         quote,
         export,
-        indent,
+        original: Some(raw.to_string()),
+        indent: indent.to_string(),
         space_after_eq,
         trailing,
     })
@@ -571,6 +611,22 @@ mod tests {
 
     fn parse(s: &str) -> EnvFile {
         EnvFile::from_str_at(s, Path::new(".env")).unwrap()
+    }
+
+    #[test]
+    fn dotenv_syntax_and_lossless_formatting() {
+        let src = "export FOO = bar   # inline\n";
+        let mut f = parse(src);
+        assert_eq!(f.get("FOO").unwrap().value, "bar");
+        f.set_value("FOO", "new").unwrap();
+        assert_eq!(parse(&f.render()).get("FOO").unwrap().value, "new");
+        let src = "1.A-B: hello\nC=abc#comment\nD=`multi\nline`\nE=\"a\\tb\\q\\n\"\n";
+        let f = parse(src);
+        assert_eq!(f.render(), src);
+        assert_eq!(f.get("1.A-B").unwrap().value, "hello");
+        assert_eq!(f.get("C").unwrap().value, "abc");
+        assert_eq!(f.get("D").unwrap().value, "multi\nline");
+        assert_eq!(f.get("E").unwrap().value, "a\\tb\\q\n");
     }
 
     #[test]
