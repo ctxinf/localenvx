@@ -320,7 +320,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
                 cmd_set(&a.args, &(&a.env).into())
             }
             ManageCmd::Get(a) => {
-                configure(&a.credentials, false, true)?;
+                configure(&a.credentials, false, false)?;
                 cmd_get(
                     &a.args,
                     &EnvArgs {
@@ -414,13 +414,15 @@ fn cmd_init() -> Result<()> {
 
 // ── F2/F3/F4 run ─────────────────────────────────────────────────────────────
 
-fn runtime_environment(env: &EnvArgs) -> Result<Vec<(String, zeroize::Zeroizing<String>)>> {
+type RuntimeEntries = Vec<(String, zeroize::Zeroizing<String>)>;
+
+fn runtime_environment(env: &EnvArgs) -> Result<(RuntimeEntries, load::Loaded)> {
     let paths = load::planned_paths(&env.files, env.cascade.as_deref());
     let mut sess = Session::open()?;
     let mut loaded = load::load_files(&paths, env.cascade.is_some(), env.r#override)?;
     let entries = load::resolve_environment(&mut sess, &mut loaded, &env.variables, env.no_expand)?;
     if env.cascade.is_some() && loaded.files.is_empty() {
-        eprintln!(
+        note!(
             "{} no cascade candidates found; continuing with the process environment",
             yellow("warn:")
         );
@@ -428,15 +430,15 @@ fn runtime_environment(env: &EnvArgs) -> Result<Vec<(String, zeroize::Zeroizing<
     for m in &loaded.missing {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
     }
-    print_summary(&loaded);
-    Ok(entries)
+    Ok((entries, loaded))
 }
 
 fn cmd_run(a: &RunArgs, env: &EnvArgs) -> Result<()> {
     if a.cmd.is_empty() {
         bail!("missing command after run");
     }
-    let entries = runtime_environment(env)?;
+    let (entries, loaded) = runtime_environment(env)?;
+    print_summary(&loaded);
     let mut cmd = std::process::Command::new(&a.cmd[0]);
     cmd.args(&a.cmd[1..]);
     cmd.envs(entries.iter().map(|(key, value)| (key, value.as_str())));
@@ -597,7 +599,28 @@ fn edit_paths(env: &EnvArgs) -> Result<Vec<PathBuf>> {
 }
 
 fn cmd_get(a: &GetArgs, env: &EnvArgs) -> Result<()> {
-    let entries = runtime_environment(env)?;
+    let (entries, loaded) = runtime_environment(env)?;
+    let source = if env.variables.iter().any(|(name, _)| *name == a.name) {
+        None
+    } else {
+        loaded
+            .entries
+            .iter()
+            .find(|entry| entry.name == a.name)
+            .map(|entry| &entry.source)
+    };
+    let mut files: Vec<_> = loaded.files.iter().collect();
+    if !env.r#override {
+        files.reverse();
+    }
+    for file in files {
+        let status = if source == Some(file) {
+            green("effective")
+        } else {
+            dim("ineffective")
+        };
+        note!("{}  {}", load::path_label(file), status);
+    }
     if let Some((_, value)) = entries.iter().find(|(key, _)| *key == a.name) {
         println!("{}", value.as_str());
     } else if let Some(value) = std::env::var_os(&a.name) {

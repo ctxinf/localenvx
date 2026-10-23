@@ -77,7 +77,7 @@ fn final_environment_priority_expansion_and_get_match_run() {
         let output = p
             .command()
             .env("K", "system")
-            .args(["manage", "get"])
+            .args(["manage", "get", "-q"])
             .args(["-e", path(&first), "-e", path(&second)])
             .args(&extra)
             .args(["K"])
@@ -431,6 +431,71 @@ fn concurrent_init_never_replaces_the_winning_key() {
         "A",
     ]));
     assert_eq!(std::fs::read(&config).unwrap(), original);
+}
+
+#[test]
+fn get_reports_read_files_and_winning_source_unless_quiet() {
+    let p = Project::new();
+    let first = p.fixture("first", "K=first\n");
+    let second = p.fixture("second", "K=second\n");
+    for (options, expected, source) in [
+        (vec![], "first\n", path(&first)),
+        (vec!["-o"], "second\n", path(&second)),
+        (
+            vec!["-v", "K=temporary"],
+            "temporary\n",
+            "temporary variable (-v)",
+        ),
+    ] {
+        for quiet in [false, true] {
+            let mut args = vec!["manage", "get", "-e", path(&first), "-e", path(&second)];
+            args.extend(&options);
+            if quiet {
+                args.push("-q");
+            }
+            args.push("K");
+            let output = p.run(&args);
+            success(&output);
+            assert_eq!(text(&output), expected);
+            let details = String::from_utf8_lossy(&output.stderr);
+            if quiet {
+                assert!(details.is_empty(), "{details}");
+            } else {
+                assert!(details.contains(path(&first)), "{details}");
+                assert!(details.contains(path(&second)), "{details}");
+                let mut files = vec![path(&first), path(&second)];
+                if !options.contains(&"-o") {
+                    files.reverse();
+                }
+                let expected = files
+                    .iter()
+                    .map(|file| {
+                        format!(
+                            "{file}  {}\n",
+                            if *file == source {
+                                "effective"
+                            } else {
+                                "ineffective"
+                            }
+                        )
+                    })
+                    .collect::<String>();
+                assert_eq!(details, expected);
+            }
+        }
+    }
+    let output = p
+        .command()
+        .env("K", "inherited")
+        .args(["manage", "get", "-e", path(&first), "K"])
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(text(&output), "inherited\n");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("{}  ineffective\n", path(&first))
+    );
 }
 
 #[test]

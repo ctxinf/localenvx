@@ -96,3 +96,5 @@ Run `localenvx --skill` or read [SKILL.md](SKILL.md) for the complete guide.
 ### Existing password-based credentials
 
 Version 1 credential files are rejected without modification. To migrate, use the previous release and the original credentials to decrypt your files, back up the old credential file, then initialize a new credential file and encrypt again. If an earlier password change replaced the credentials without re-encrypting a file, recovery requires the original credential backup.
+
+`localenvx manage get KEY` lists files from lowest to highest priority on stderr, marking the effective file `effective` (green) and other files `ineffective` (gray), and the value to stdout. Add `-q` to return only the value.
