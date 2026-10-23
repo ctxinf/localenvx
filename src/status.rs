@@ -11,51 +11,30 @@ pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
         style("1;36", &format!("🔐 localenvx v{}", crate::VERSION)),
         style("1;36", "📊 Status:")
     );
+    let active = config::config_path().ok();
     if let Ok(dir) = config::config_dir() {
         let path = dir.join("config.toml");
         let _ = writeln!(
             out,
-            "  👤 User config: {} ({})",
-            path.display(),
-            presence(&path)
+            "  👤 User config: {}",
+            config_status(&path, active.as_deref())
         );
-    }
-    match config::config_path() {
-        Ok(path) => {
-            let state = match path.try_exists() {
-                Ok(false) => style("33", "⚠️ not generated; run localenvx manage init"),
-                Ok(true) => match config::load() {
-                    Ok(_) => style("32", "✅ initialized"),
-                    Err(_) => style("31", "❌ unusable (invalid configuration or permissions)"),
-                },
-                Err(_) => style("33", "⚠️ unavailable"),
-            };
-            let _ = writeln!(out, "  🔑 Active config: {} ({state})", path.display());
-        }
-        Err(_) => {
-            let _ = writeln!(
-                out,
-                "  🔑 Active config: {}",
-                style("33", "⚠️ unavailable; check HOME or LOCALENVX_CONFIG_DIR")
-            );
-        }
     }
     if let Ok(cwd) = std::env::current_dir() {
-        let _ = writeln!(
-            out,
-            "  📂 Directory: {}",
-            style("36", &cwd.display().to_string())
-        );
+        let mut found = false;
         for dir in cwd.ancestors() {
             let path = dir.join(".localenvx/config.toml");
-            if dir == cwd || path.exists() {
+            if path.exists() {
+                found = true;
                 let _ = writeln!(
                     out,
-                    "  📦 Project config: {} ({})",
-                    path.display(),
-                    presence(&path)
+                    "  📦 Project config: {}",
+                    config_status(&path, active.as_deref())
                 );
             }
+        }
+        if !found {
+            let _ = writeln!(out, "  📦 Project config: not existed");
         }
     }
     let mut paths = load::planned_paths(files, cascade);
@@ -176,12 +155,17 @@ pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
     out
 }
 
-fn presence(path: &std::path::Path) -> String {
-    match path.try_exists() {
+fn config_status(path: &std::path::Path, active: Option<&std::path::Path>) -> String {
+    let state = match path.try_exists() {
+        Ok(false) => return style("2", "not existed"),
+        Ok(true) if active == Some(path) => match config::load() {
+            Ok(_) => style("32", "✅Active"),
+            Err(_) => style("31", "❌ unusable (invalid configuration or permissions)"),
+        },
         Ok(true) => style("32", "✅ generated"),
-        Ok(false) => style("2", "○ not generated"),
         Err(_) => style("33", "⚠️ unavailable"),
-    }
+    };
+    format!("{} ({state})", path.display())
 }
 
 // Status is written to stdout; redirected output stays free of ANSI escapes.

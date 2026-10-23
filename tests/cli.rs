@@ -750,8 +750,9 @@ fn status_reports_configuration_and_suggestions_without_values() {
     let report = String::from_utf8_lossy(&output.stdout);
     for expected in [
         "Status:",
-        "Active config:",
-        "initialized",
+        "User config:",
+        "(✅Active)",
+        "📦 Project config: not existed",
         ".env.example",
         "2 variables, 1 encrypted, 1 plaintext",
         "localenvx --help",
@@ -760,6 +761,8 @@ fn status_reports_configuration_and_suggestions_without_values() {
     ] {
         assert!(report.contains(expected), "missing {expected}: {report}");
     }
+    assert!(!report.contains("Active config:"));
+    assert!(!report.contains("Directory:"));
     assert!(!report.contains("synthetic-private"));
     assert!(!report.contains("MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWY="));
     // Invalid configurations must not expose parser diagnostics containing secrets.
@@ -772,7 +775,7 @@ fn status_reports_configuration_and_suggestions_without_values() {
     std::fs::remove_file(p.0.join("config.toml")).unwrap();
     let output = p.run(&["manage", "status"]);
     let report = String::from_utf8_lossy(&output.stdout);
-    assert!(report.contains("not generated"));
+    assert!(report.contains("User config: not existed"));
     assert!(report.contains("1 encrypted"));
 }
 
