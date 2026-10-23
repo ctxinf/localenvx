@@ -29,6 +29,9 @@ struct Cli {
     /// Read the password from stdin (highest precedence)
     #[arg(long, global = true)]
     password_stdin: bool,
+    /// Credential config path (overrides the default config location)
+    #[arg(long, global = true)]
+    config_file: Option<PathBuf>,
     /// Silence the stderr summary entirely
     #[arg(long, short, global = true)]
     quiet: bool,
@@ -172,6 +175,7 @@ fn main() {
 }
 
 fn dispatch(cli: &Cli) -> Result<()> {
+    config::select_path(cli.config_file.clone());
     match &cli.cmd {
         Cmd::Init(a) => cmd_init(a),
         Cmd::Run(a) => cmd_run(a, cli.password_stdin),

@@ -70,7 +70,18 @@ pub fn config_dir() -> Result<PathBuf> {
     Ok(base.join("localenvx"))
 }
 
+thread_local! {
+    static SELECTED_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn select_path(path: Option<PathBuf>) {
+    SELECTED_PATH.with(|selected| *selected.borrow_mut() = path);
+}
+
 pub fn config_path() -> Result<PathBuf> {
+    if let Some(path) = SELECTED_PATH.with(|selected| selected.borrow().clone()) {
+        return Ok(path);
+    }
     Ok(config_dir()?.join("config.toml"))
 }
 
@@ -100,9 +111,11 @@ pub fn load() -> Result<Config> {
 }
 
 pub fn save(cfg: &Config) -> Result<PathBuf> {
-    let dir = config_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let path = dir.join("config.toml");
+    let path = config_path()?;
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create {}", dir.display()))?;
+    }
     let text = toml::to_string_pretty(cfg)?;
     write_private(&path, text.as_bytes())?;
     Ok(path)
