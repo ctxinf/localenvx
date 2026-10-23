@@ -792,13 +792,15 @@ fn project_credentials_win_and_user_credentials_are_a_fallback() {
 fn project_initialization_is_explicit_and_does_not_replace_user_credentials() {
     let p = Project::new();
     let original = std::fs::read(p.0.join("config.toml")).unwrap();
-    success(&p.run(&["manage", "init", "--config-file", ".localenvx/config.toml"]));
+    success(&p.run(&["manage", "init", "--project"]));
     assert!(p.0.join(".localenvx/config.toml").is_file());
     assert_eq!(std::fs::read(p.0.join("config.toml")).unwrap(), original);
     failure(
-        &p.run(&["manage", "init", "--config-file", ".localenvx/config.toml"]),
-        "already exists",
+        &p.run(&["manage", "init", "--project", "--config-file", "other.toml"]),
+        "cannot be used with",
     );
+    assert!(!p.0.join("other.toml").exists());
+    failure(&p.run(&["manage", "init", "--project"]), "already exists");
 }
 
 #[test]
@@ -822,7 +824,7 @@ fn status_reports_configuration_and_suggestions_without_values() {
         "2 variables, 1 encrypted, 1 plaintext",
         "localenvx --help",
         "localenvx run -- <command>",
-        "localenvx manage init --config-file .localenvx/config.toml",
+        "localenvx manage init --project",
     ] {
         assert!(report.contains(expected), "missing {expected}: {report}");
     }
@@ -944,7 +946,7 @@ fn project_initialization_rejects_existing_user_encryption() {
         cmd.current_dir(&p.0)
             .env_clear()
             .env("LOCALENVX_CONFIG_DIR", &p.0)
-            .args(["manage", "init", "--config-file", ".localenvx/config.toml"]);
+            .args(["manage", "init", "--project"]);
         let output = cmd.output().unwrap();
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);

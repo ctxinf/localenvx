@@ -20,10 +20,10 @@ printf '%s' 'example-secret' | localenvx manage set API_TOKEN --enc --stdin -y
 # Decrypt into the child environment only.
 localenvx run -- node app.js
 # Use project credentials instead of user credentials.
-localenvx manage init --config-file .localenvx/config.toml
+localenvx manage init --project
 ```
 
-By default, the nearest `.localenvx/config.toml` found from the current directory upward wins over the user config. `init` defaults to creating user credentials; use `--config-file .localenvx/config.toml` to initialize project credentials. `--config-file PATH` wins over both; `LOCALENVX_CONFIG_DIR` overrides the user config directory, and `XDG_CONFIG_HOME` overrides its base on all platforms. Project initialization rejects existing encrypted env files to avoid losing access to user-encrypted values.
+By default, the nearest `.localenvx/config.toml` found from the current directory upward wins over the user config. `init` defaults to creating user credentials; use `--project` to initialize project credentials in the current directory. `--config-file PATH` wins over both; `LOCALENVX_CONFIG_DIR` overrides the user config directory, and `XDG_CONFIG_HOME` overrides its base on all platforms. Project initialization rejects existing encrypted env files to avoid losing access to user-encrypted values.
 
 For agents: use `manage ls` and `manage status` to inspect metadata. `manage get`, `manage dec`, and the local UI reveal secrets; only use them when requested. Keep credentials and encrypted env files out of commits unless the user explicitly chooses otherwise. Encryption protects stored values, not against a process that can read credentials or invoke this tool.
 
@@ -61,7 +61,7 @@ DATABASE_URL=encrypted:v1:BFc4vRxLq8mN2pQ...
 | Command | Description |
 |---|---|
 | `manage status` | Show version, credentials and file metadata |
-| `manage init [--config-file PATH]` | Generate a random credential key file; never overwrite existing credentials |
+| `manage init [--project | --config-file PATH]` | Generate a random credential key file; never overwrite existing credentials |
 | `[OPTIONS] [--] CMD [ARGS...]` | Direct run; arguments after CMD pass through untouched |
 | `run [OPTIONS] [--] CMD [ARGS...]` | Explicit run, sharing the direct entry's resolution and execution |
 | `manage set NAME [VALUE] [--enc\|--plain] [--stdin] [-e FILE]... [-y]` | Write to every selected file after confirmation |

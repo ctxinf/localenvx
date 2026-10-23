@@ -133,7 +133,7 @@ pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
         ("localenvx --help", "Show commands and options"),
         ("localenvx manage init", "Create user credentials"),
         (
-            "localenvx manage init --config-file .localenvx/config.toml",
+            "localenvx manage init --project",
             "Create project credentials",
         ),
         (

@@ -85,6 +85,9 @@ macro_rules! entry {
 }
 #[derive(Args)]
 struct InitEntry {
+    /// Initialize credentials in the current directory at .localenvx/config.toml
+    #[arg(long, conflicts_with = "config_file")]
+    project: bool,
     #[command(flatten)]
     credentials: Credentials,
 }
@@ -307,7 +310,15 @@ fn dispatch(cli: &Cli) -> Result<()> {
         }
         Some(Cmd::Manage(cmd)) => match cmd {
             ManageCmd::Init(a) => {
-                configure(&a.credentials, true, false)?;
+                let credentials = Credentials {
+                    config_file: if a.project {
+                        Some(std::env::current_dir()?.join(".localenvx/config.toml"))
+                    } else {
+                        a.credentials.config_file.clone()
+                    },
+                    quiet: a.credentials.quiet,
+                };
+                configure(&credentials, true, false)?;
                 cmd_init()
             }
             ManageCmd::Status => {
@@ -796,7 +807,14 @@ mod cli_tests {
         for argv in [
             vec!["localenvx", "manage", "-e", "file", "get", "KEY"],
             vec!["localenvx", "manage", "init", "-v", "KEY=value"],
-            vec!["localenvx", "manage", "init", "--project"],
+            vec![
+                "localenvx",
+                "manage",
+                "init",
+                "--project",
+                "--config-file",
+                "x",
+            ],
             vec!["localenvx", "manage", "ls", "--no-expand"],
             vec!["localenvx", "--skill", "manage", "status"],
         ] {
