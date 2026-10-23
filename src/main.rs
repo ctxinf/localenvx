@@ -119,7 +119,7 @@ fn parse_variable(input: &str) -> std::result::Result<(String, String), String> 
 #[derive(Args)]
 struct RunArgs {
     /// Command and arguments, optionally preceded by --
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     cmd: Vec<OsString>,
 }
 
@@ -328,6 +328,9 @@ fn runtime_environment(
 }
 
 fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+    if a.cmd.is_empty() {
+        bail!("missing command after run");
+    }
     let entries = runtime_environment(env, password_stdin)?;
     let mut cmd = std::process::Command::new(&a.cmd[0]);
     cmd.args(&a.cmd[1..]);
