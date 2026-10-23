@@ -1,7 +1,7 @@
 class Localenvx < Formula
   desc "Local-only dotenv loading and encrypted environment values"
   homepage "https://github.com/ctxinf/localenvx"
-  url "https://github.com/ctxinf/localenvx.git", tag: "v0.4.1"
+  url "https://github.com/ctxinf/localenvx.git", tag: "v0.4.2"
   license "MIT"
   head "https://github.com/ctxinf/localenvx.git", branch: "main"
 
