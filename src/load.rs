@@ -77,14 +77,11 @@ pub fn load_files(
         }
     }
     let mut done = std::collections::HashSet::new();
-    loop {
-        let Some(i) = out
-            .entries
-            .iter()
-            .position(|entry| needed.contains(&entry.name) && !done.contains(&entry.name))
-        else {
-            break;
-        };
+    while let Some(i) = out
+        .entries
+        .iter()
+        .position(|entry| needed.contains(&entry.name) && !done.contains(&entry.name))
+    {
         let entry = &mut out.entries[i];
         // A value referenced during expansion is effective even if -v replaces its own key later.
         if entry.encrypted {
