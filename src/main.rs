@@ -28,7 +28,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
     bin_name = "localenvx",
     version,
     disable_help_subcommand = true,
-    about = "Encrypted environment-variable manager for local development",
+    about = "dotenv-cli-like usage. dotenvx-style encryption. A local encrypted .env manager.",
     long_about = "No plaintext secrets on disk: sensitive values in .env are stored as XChaCha20-Poly1305\nciphertext, decrypted only during `localenvx run` and passed to the child process via environ."
 )]
 struct Cli {

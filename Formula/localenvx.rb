@@ -1,5 +1,5 @@
 class Localenvx < Formula
-  desc "Local-only dotenv loading and encrypted environment values"
+  desc "dotenv-cli-like usage. dotenvx-style encryption. A local encrypted .env manager."
   homepage "https://github.com/ctxinf/localenvx"
   url "https://github.com/ctxinf/localenvx.git", tag: "v0.4.2"
   license "MIT"

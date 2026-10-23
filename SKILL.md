@@ -1,11 +1,11 @@
 ---
 name: localenvx
-description: Load dotenv files and encrypt local development secrets with localenvx.
+description: dotenv-cli-like usage. dotenvx-style encryption. A local encrypted .env manager.
 ---
 
 # localenvx usage guide
 
-Local-only dotenv loading and value encryption, combining dotenv-cli style execution with dotenvx style encrypted values. No hosted service or synchronization.
+dotenv-cli-like usage. dotenvx-style encryption. A local encrypted .env manager.
 
 Run `localenvx skill` to print this bundled guide; no configuration is needed.
 Use `localenvx --help` or `localenvx COMMAND --help` for flags.
