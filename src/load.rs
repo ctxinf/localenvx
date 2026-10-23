@@ -38,14 +38,7 @@ impl Loaded {
 }
 
 /// Missing paths are tolerated only for cascade candidates.
-pub fn load_files(
-    sess: &mut Session,
-    paths: &[PathBuf],
-    allow_missing: bool,
-    override_env: bool,
-    variables: &[(String, String)],
-    no_expand: bool,
-) -> Result<Loaded> {
+pub fn load_files(paths: &[PathBuf], allow_missing: bool, override_env: bool) -> Result<Loaded> {
     let mut out = Loaded::default();
     let mut files = Vec::new();
     for path in paths {
@@ -63,37 +56,75 @@ pub fn load_files(
     select_files(&mut out, &files, override_env);
     out.entries
         .retain(|entry| override_env || std::env::var_os(&entry.name).is_none());
-    let mut needed: std::collections::HashSet<String> = out
+    Ok(out)
+}
+
+/// Merge first, then decrypt on actual reads during expansion. Temporary values
+/// are applied last and never expanded, matching the runtime precedence rules.
+pub fn resolve_environment(
+    sess: &mut Session,
+    loaded: &mut Loaded,
+    variables: &[(String, String)],
+    no_expand: bool,
+) -> Result<Vec<(String, Zeroizing<String>)>> {
+    use std::collections::{HashMap, HashSet};
+    let mut entries: Vec<_> = std::env::vars_os()
+        .filter_map(|(key, value)| {
+            Some((
+                key.into_string().ok()?,
+                Zeroizing::new(value.into_string().ok()?),
+            ))
+        })
+        .collect();
+    let indices: HashMap<_, _> = loaded
         .entries
         .iter()
-        .filter(|entry| !variables.iter().any(|(name, _)| *name == entry.name))
-        .map(|entry| entry.name.clone())
+        .enumerate()
+        .map(|(i, entry)| (entry.name.clone(), i))
         .collect();
-    if !no_expand {
-        for (_, value) in std::env::vars_os() {
-            if let Some(value) = value.to_str() {
-                needed.extend(crate::expand::referenced_names(value));
+    for entry in &loaded.entries {
+        if let Some((_, value)) = entries.iter_mut().find(|(key, _)| *key == entry.name) {
+            *value = entry.value.clone();
+        } else {
+            entries.push((entry.name.clone(), entry.value.clone()));
+        }
+    }
+    let replaced: HashSet<_> = variables.iter().map(|(name, _)| name.clone()).collect();
+    let mut used = HashSet::new();
+    let mut resolve = |name: &str, raw: &str| -> Result<Zeroizing<String>> {
+        if let Some(&i) = indices.get(name) {
+            let entry = &mut loaded.entries[i];
+            if used.insert(i) && entry.encrypted {
+                entry.value = crypto::decrypt(sess.key()?, name, raw)?;
+            }
+            Ok(entry.value.clone())
+        } else {
+            Ok(Zeroizing::new(raw.to_string()))
+        }
+    };
+    if no_expand {
+        for (key, value) in &mut entries {
+            if !replaced.contains(key) {
+                *value = resolve(key, value)?;
             }
         }
+    } else {
+        crate::expand::expand_with(&mut entries, &replaced, &mut resolve)?;
     }
-    let mut done = std::collections::HashSet::new();
-    while let Some(i) = out
-        .entries
-        .iter()
-        .position(|entry| needed.contains(&entry.name) && !done.contains(&entry.name))
-    {
-        let entry = &mut out.entries[i];
-        // A value referenced during expansion is effective even if -v replaces its own key later.
-        if entry.encrypted {
-            entry.value = crypto::decrypt(sess.key()?, &entry.name, &entry.value)?;
+    let mut index = 0;
+    loaded.entries.retain(|_| {
+        let keep = used.contains(&index);
+        index += 1;
+        keep
+    });
+    for (key, value) in variables {
+        if let Some((_, existing)) = entries.iter_mut().find(|(name, _)| name == key) {
+            *existing = Zeroizing::new(value.clone());
+        } else {
+            entries.push((key.clone(), Zeroizing::new(value.clone())));
         }
-        if !no_expand {
-            needed.extend(crate::expand::referenced_names(&entry.value));
-        }
-        done.insert(entry.name.clone());
     }
-    out.entries.retain(|entry| done.contains(&entry.name));
-    Ok(out)
+    Ok(entries)
 }
 
 fn select_files(out: &mut Loaded, files: &[EnvFile], override_env: bool) {

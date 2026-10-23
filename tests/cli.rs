@@ -339,3 +339,138 @@ fn quiet_false_overrides_the_quiet_environment_and_run_debug_needs_no_command() 
     success(&output);
     assert_eq!(text(&output), "[ 'absent' ]\n{}\n");
 }
+
+#[cfg(unix)]
+#[test]
+fn unused_conditional_branches_do_not_decrypt_temporary_replacements() {
+    let p = Project::new();
+    for (i, expression, expected) in [
+        (0, "${GOOD:-$BAD}", "ok"),
+        (1, "${GOOD-$BAD}", "ok"),
+        (2, "${MISSING:+$BAD}", ""),
+        (3, "${MISSING+$BAD}", ""),
+        (4, "${GOOD:-${BAD:-fallback}}", "ok"),
+        (5, "${MISSING:+${BAD:-fallback}}", ""),
+        (6, "${GOOD:+${MISSING:-ok}}", "ok"),
+    ] {
+        // A replaced key must stay lazy regardless of its position in file order.
+        for before in [true, false] {
+            let bad = "BAD=encrypted:v1:invalid\n";
+            let content = format!("GOOD=ok\nK={expression}\n");
+            let content = if before {
+                format!("{bad}{content}")
+            } else {
+                format!("{content}{bad}")
+            };
+            let file = p.fixture(&format!("case-{i}-{before}"), &content);
+            for command in [
+                vec!["get", "K"],
+                vec!["run", "--", "/bin/sh", "-c", "printf '%s\\n' \"$K\""],
+            ] {
+                let output = p
+                    .command()
+                    .args(["-e", path(&file), "-v", "BAD=temporary"])
+                    .args(command)
+                    .output()
+                    .unwrap();
+                success(&output);
+                assert_eq!(text(&output), format!("{expected}\n"), "{expression}");
+            }
+        }
+    }
+}
+
+#[test]
+fn selected_conditional_branches_still_require_decryption() {
+    let p = Project::new();
+    for (i, expression) in [
+        "${MISSING:-$BAD}",
+        "${GOOD:+$BAD}",
+        "${MISSING:-${GOOD:+$BAD}}",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let file = p.fixture(
+            &format!("bad-{i}"),
+            &format!("GOOD=ok\nBAD=encrypted:v1:invalid\nK={expression}\n"),
+        );
+        let output = p.run(&["-e", path(&file), "-v", "BAD=temporary", "get", "K"]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("BAD:"));
+    }
+    let file = p.fixture(
+        "encrypted",
+        "# @localenvx-mode:whitelist\nK=${SECRET:-${BAD:-fallback}}\nBAD=encrypted:v1:invalid\n",
+    );
+    success(&p.run(&[
+        "-e",
+        path(&file),
+        "set",
+        "SECRET",
+        "decrypted",
+        "--enc",
+        "-y",
+    ]));
+    let output = p.run(&[
+        "-e",
+        path(&file),
+        "-v",
+        "BAD=temporary",
+        "-v",
+        "SECRET=temporary",
+        "get",
+        "K",
+    ]);
+    success(&output);
+    assert_eq!(text(&output), "decrypted\n");
+    // The condition must use decrypted emptiness, not ciphertext non-emptiness.
+    success(&p.run(&["-e", path(&file), "set", "SECRET", "", "--enc", "-y"]));
+    assert!(
+        !p.run(&["-e", path(&file), "-v", "BAD=temporary", "get", "K"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn process_environment_dependencies_are_lazy_too() {
+    let p = Project::new();
+    let file = p.fixture("first", "GOOD=ok\nBAD=encrypted:v1:invalid\n");
+    let output = p
+        .command()
+        .env("K", "${GOOD:-$BAD}")
+        .args(["-e", path(&file), "-v", "BAD=temporary", "get", "K"])
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(text(&output), "ok\n");
+    let output = p
+        .command()
+        .env("K", "$BAD")
+        .args([
+            "-e",
+            path(&file),
+            "-v",
+            "BAD=temporary",
+            "-v",
+            "K=replaced",
+            "get",
+            "K",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(text(&output), "replaced\n");
+    let output = p.run(&[
+        "-e",
+        path(&file),
+        "--no-expand",
+        "-v",
+        "BAD=temporary",
+        "get",
+        "GOOD",
+    ]);
+    success(&output);
+    assert_eq!(text(&output), "ok\n");
+}

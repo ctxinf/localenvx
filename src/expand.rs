@@ -1,8 +1,9 @@
 //! dotenv-expand 12 semantics over the final environment, in insertion order.
+use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use zeroize::Zeroizing;
 
-/// Find an unescaped reference, including innermost braced expressions.
+/// Find the outermost reference so an unused conditional branch stays unevaluated.
 fn reference(text: &str, from: usize) -> Option<(usize, usize, &str)> {
     for (offset, ch) in text[from..].char_indices() {
         let start = from + offset;
@@ -11,9 +12,18 @@ fn reference(text: &str, from: usize) -> Option<(usize, usize, &str)> {
         }
         let rest = &text[start + 1..];
         if let Some(braced) = rest.strip_prefix('{') {
-            if let Some(end) = braced.find('}') {
-                if end > 0 && !braced[..end].contains('{') {
-                    return Some((start, start + end + 3, &braced[..end]));
+            let mut depth = 1;
+            for (end, ch) in braced.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    if end > 0 {
+                        return Some((start, start + end + 3, &braced[..end]));
+                    }
+                    break;
                 }
             }
         } else if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
@@ -45,36 +55,6 @@ fn expression(expression: &str) -> (&str, &str, &str) {
         }
     }
     (expression, "", "")
-}
-
-pub fn referenced_names(text: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for (start, ch) in text.char_indices() {
-        if ch != '$' || (start > 0 && text.as_bytes()[start - 1] == b'\\') {
-            continue;
-        }
-        let rest = &text[start + 1..];
-        if let Some(braced) = rest.strip_prefix('{') {
-            let mut depth = 1;
-            for (i, ch) in braced.char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => depth -= 1,
-                    _ => {}
-                }
-                if depth == 0 {
-                    names.push(expression(&braced[..i]).0.to_string());
-                    break;
-                }
-            }
-        } else if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-            let len = rest
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .unwrap_or(rest.len());
-            names.push(rest[..len].to_string());
-        }
-    }
-    names
 }
 
 fn replacement_text(replacement: &str, input: &str, start: usize, end: usize) -> String {
@@ -111,7 +91,13 @@ fn replacement_text(replacement: &str, input: &str, start: usize, end: usize) ->
     out
 }
 
-pub fn expand(entries: &mut [(String, Zeroizing<String>)]) {
+/// Resolve raw values only when expansion actually reads them. Keys replaced by
+/// temporary variables are not roots, but remain available as dependencies.
+pub fn expand_with(
+    entries: &mut [(String, Zeroizing<String>)],
+    replaced: &HashSet<String>,
+    mut resolve: impl FnMut(&str, &str) -> Result<Zeroizing<String>>,
+) -> Result<()> {
     // Integer property names come first in JavaScript's object enumeration.
     let mut order: Vec<usize> = (0..entries.len()).collect();
     let index = |key: &str| {
@@ -122,13 +108,18 @@ pub fn expand(entries: &mut [(String, Zeroizing<String>)]) {
     order.sort_by_key(|i| (index(&entries[*i].0).is_none(), index(&entries[*i].0)));
     let mut env: HashMap<String, Zeroizing<String>> = entries.iter().cloned().collect();
     let mut running: HashMap<String, Zeroizing<String>> = HashMap::new();
+    let mut resolved = HashSet::new();
     for i in order {
-        let mut result = entries[i].1.clone();
+        if replaced.contains(&entries[i].0) {
+            continue;
+        }
+        let mut result = resolve_value(&entries[i].0, &mut env, &mut resolved, &mut resolve)?;
         let mut seen = HashSet::new();
         while let Some((start, end, expr)) = reference(&result, 0) {
             let (key, op, default) = expression(expr);
             let key = key.to_string();
-            let value = env.get(&key).map(|s| s.as_str()).unwrap_or("");
+            let value = resolve_value(&key, &mut env, &mut resolved, &mut resolve)?;
+            let value = value.as_str();
             let fallback = if matches!(op, "+" | ":+") && value.is_empty() {
                 ""
             } else {
@@ -166,6 +157,24 @@ pub fn expand(entries: &mut [(String, Zeroizing<String>)]) {
         env.insert(entries[i].0.clone(), result.clone());
         entries[i].1 = result;
     }
+    Ok(())
+}
+
+fn resolve_value(
+    key: &str,
+    env: &mut HashMap<String, Zeroizing<String>>,
+    resolved: &mut HashSet<String>,
+    resolve: &mut impl FnMut(&str, &str) -> Result<Zeroizing<String>>,
+) -> Result<Zeroizing<String>> {
+    let Some(value) = env.get(key) else {
+        return Ok(Zeroizing::new(String::new()));
+    };
+    if !resolved.contains(key) {
+        let value = resolve(key, value)?;
+        env.insert(key.to_string(), value);
+        resolved.insert(key.to_string());
+    }
+    Ok(env[key].clone())
 }
 
 #[cfg(test)]
@@ -177,13 +186,11 @@ mod tests {
             .map(|(k, v)| (k.to_string(), Zeroizing::new(v.to_string())))
             .collect()
     }
-    #[test]
-    fn nested_defaults_keep_all_potential_decryption_dependencies() {
-        assert_eq!(
-            referenced_names("${SECRET:-${OTHER:-fallback}}"),
-            ["SECRET", "OTHER"]
-        );
-        assert!(referenced_names(r"\$SECRET").is_empty());
+    fn expand(entries: &mut [(String, Zeroizing<String>)]) {
+        expand_with(entries, &HashSet::new(), |_, value| {
+            Ok(Zeroizing::new(value.to_string()))
+        })
+        .unwrap();
     }
 
     #[test]

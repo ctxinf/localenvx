@@ -281,14 +281,8 @@ fn runtime_environment(
 ) -> Result<Vec<(String, zeroize::Zeroizing<String>)>> {
     let paths = load::planned_paths(&env.files, env.cascade.as_deref());
     let mut sess = Session::open(password_stdin)?;
-    let loaded = load::load_files(
-        &mut sess,
-        &paths,
-        env.cascade.is_some(),
-        env.r#override,
-        &env.variables,
-        env.no_expand,
-    )?;
+    let mut loaded = load::load_files(&paths, env.cascade.is_some(), env.r#override)?;
+    let entries = load::resolve_environment(&mut sess, &mut loaded, &env.variables, env.no_expand)?;
     if env.cascade.is_some() && loaded.files.is_empty() {
         eprintln!(
             "{} no cascade candidates found; continuing with the process environment",
@@ -299,31 +293,6 @@ fn runtime_environment(
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
     }
     print_summary(&loaded);
-    let mut entries: Vec<_> = std::env::vars_os()
-        .filter_map(|(key, value)| {
-            Some((
-                key.into_string().ok()?,
-                zeroize::Zeroizing::new(value.into_string().ok()?),
-            ))
-        })
-        .collect();
-    for entry in loaded.entries {
-        if let Some((_, value)) = entries.iter_mut().find(|(key, _)| *key == entry.name) {
-            *value = entry.value;
-        } else {
-            entries.push((entry.name, entry.value));
-        }
-    }
-    if !env.no_expand {
-        expand::expand(&mut entries);
-    }
-    for (key, value) in &env.variables {
-        if let Some((_, existing)) = entries.iter_mut().find(|(name, _)| name == key) {
-            *existing = zeroize::Zeroizing::new(value.clone());
-        } else {
-            entries.push((key.clone(), zeroize::Zeroizing::new(value.clone())));
-        }
-    }
     Ok(entries)
 }
 
