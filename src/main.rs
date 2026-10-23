@@ -6,7 +6,9 @@ mod session;
 mod term;
 mod ui;
 
-use anyhow::{Context, Result, bail};
+#[cfg(not(unix))]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -110,8 +112,12 @@ struct SetArgs {
 #[derive(Args)]
 struct GetArgs {
     name: String,
-    #[command(flatten)]
-    file: FileArg,
+    /// Env files, precedence increasing left to right; defaults to .env
+    #[arg(short = 'f', long = "file")]
+    files: Vec<PathBuf>,
+    /// Let files override the real process environment
+    #[arg(long)]
+    r#override: bool,
 }
 
 #[derive(Args)]
@@ -351,16 +357,23 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
 }
 
 fn cmd_get(a: &GetArgs, password_stdin: bool) -> Result<()> {
-    let file = EnvFile::load(&a.file.file)?;
-    let var = file
-        .get(&a.name)
-        .with_context(|| format!("{}: no variable named {}", a.file.file.display(), a.name))?;
-    if var.is_encrypted() {
-        let mut sess = Session::open(password_stdin)?;
-        let pt = crypto::decrypt(sess.key()?, &a.name, &var.value)?;
-        println!("{}", *pt);
+    let (paths, explicit) = load::default_paths(&a.files);
+    let mut sess = Session::open(password_stdin)?;
+    let loaded = load::load_files(&mut sess, &paths, explicit)?;
+    for m in &loaded.missing {
+        note!("{} {} not found, skipped", yellow("⚠️"), m.display());
+    }
+    let file_value = loaded.entries.iter().find(|e| e.name == a.name);
+    let process_value = std::env::var_os(&a.name);
+    if let Some(value) = process_value.filter(|_| !a.r#override || file_value.is_none()) {
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(value.as_encoded_bytes())?;
+        stdout.write_all(b"\n")?;
+    } else if let Some(entry) = file_value {
+        println!("{}", entry.value.as_str());
     } else {
-        println!("{}", var.value);
+        bail!("no variable named {} in the final environment", a.name);
     }
     Ok(())
 }
