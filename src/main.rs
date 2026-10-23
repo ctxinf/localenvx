@@ -124,18 +124,9 @@ struct RunArgs {
 }
 
 #[derive(Args)]
-struct FileArg {
-    /// Target file; defaults to .env
-    #[arg(short, long, default_value = ".env")]
-    file: PathBuf,
-}
-
-#[derive(Args)]
 struct SetArgs {
     name: String,
     value: Option<String>,
-    #[command(flatten)]
-    file: FileArg,
     /// Force plaintext
     #[arg(long, conflicts_with = "enc")]
     plain: bool,
@@ -153,21 +144,15 @@ struct GetArgs {
 }
 
 #[derive(Args)]
-struct ListArgs {
-    files: Vec<PathBuf>,
-}
+struct ListArgs {}
 
 #[derive(Args)]
 struct RmArgs {
     name: String,
-    #[command(flatten)]
-    file: FileArg,
 }
 
 #[derive(Args)]
 struct BulkArgs {
-    #[command(flatten)]
-    file: FileArg,
     /// Variable name or glob, repeatable; encrypt defaults to "every variable this file's mode says should be encrypted" (all of them under blacklist)
     #[arg(short = 'k', long = "key")]
     keys: Vec<String>,
@@ -175,8 +160,6 @@ struct BulkArgs {
 
 #[derive(Args)]
 struct PasswdArgs {
-    /// Files to re-encrypt; with none given only the password changes (old ciphertext becomes undecryptable)
-    files: Vec<PathBuf>,
     /// Do not store the new password in the config
     #[arg(long)]
     no_store: bool,
@@ -224,13 +207,13 @@ fn dispatch(cli: &Cli) -> Result<()> {
         None => bail!("missing command; use localenvx [OPTIONS] -- COMMAND [ARGS...]"),
         Some(Cmd::Init(a)) => cmd_init(a),
         Some(Cmd::Run(a)) => cmd_run(a, &cli.env, cli.password_stdin),
-        Some(Cmd::Set(a)) => cmd_set(a, cli.password_stdin),
+        Some(Cmd::Set(a)) => cmd_set(a, &cli.env, cli.password_stdin),
         Some(Cmd::Get(a)) => cmd_get(a, &cli.env, cli.password_stdin),
-        Some(Cmd::List(a)) => cmd_list(a),
-        Some(Cmd::Rm(a)) => cmd_rm(a),
-        Some(Cmd::Encrypt(a)) => cmd_encrypt(a, cli.password_stdin),
-        Some(Cmd::Decrypt(a)) => cmd_decrypt(a, cli.password_stdin),
-        Some(Cmd::Passwd(a)) => cmd_passwd(a),
+        Some(Cmd::List(a)) => cmd_list(a, &cli.env),
+        Some(Cmd::Rm(a)) => cmd_rm(a, &cli.env),
+        Some(Cmd::Encrypt(a)) => cmd_encrypt(a, &cli.env, cli.password_stdin),
+        Some(Cmd::Decrypt(a)) => cmd_decrypt(a, &cli.env, cli.password_stdin),
+        Some(Cmd::Passwd(a)) => cmd_passwd(a, &cli.env),
         Some(Cmd::Ui(a)) => ui::serve(a.port, a.strict_port, cli.password_stdin),
     }
 }
@@ -386,6 +369,14 @@ fn print_summary(loaded: &load::Loaded) {
 
 // ── F5 CRUD ─────────────────────────────────────────────────────────────────
 
+fn target_file(env: &EnvArgs) -> Result<&std::path::Path> {
+    match env.files.as_slice() {
+        [] => Ok(std::path::Path::new(".env")),
+        [file] => Ok(file),
+        _ => bail!("this command accepts a single -e file"),
+    }
+}
+
 fn open_or_new(path: &std::path::Path) -> Result<EnvFile> {
     if path.exists() {
         EnvFile::load(path)
@@ -394,7 +385,7 @@ fn open_or_new(path: &std::path::Path) -> Result<EnvFile> {
     }
 }
 
-fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
+fn cmd_set(a: &SetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
     let value = match (&a.value, a.stdin) {
         (Some(v), false) => v.clone(),
         (None, true) => {
@@ -409,7 +400,7 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
         (None, false) => bail!("missing VALUE (or use --stdin to read it from standard input)"),
     };
 
-    let mut file = open_or_new(&a.file.file)?;
+    let mut file = open_or_new(target_file(env)?)?;
     let want_enc = if a.enc {
         Some(true)
     } else if a.plain {
@@ -432,7 +423,7 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
         "{} {} → {} ({})",
         green("✓"),
         a.name,
-        a.file.file.display(),
+        target_file(env)?.display(),
         if encrypt { "encrypted" } else { "plain" }
     );
     Ok(())
@@ -453,16 +444,9 @@ fn cmd_get(a: &GetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_list(a: &ListArgs) -> Result<()> {
-    let (paths, explicit) = load::default_paths(&a.files);
+fn cmd_list(_a: &ListArgs, env: &EnvArgs) -> Result<()> {
+    let (paths, _) = load::default_paths(&env.files);
     for path in &paths {
-        if !path.exists() {
-            if explicit {
-                bail!("file not found: {}", path.display());
-            }
-            note!("{} {} not found", yellow("⚠️"), path.display());
-            continue;
-        }
         let file = EnvFile::load(path)?;
         println!(
             "{}  {}",
@@ -481,8 +465,8 @@ fn cmd_list(a: &ListArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_rm(a: &RmArgs) -> Result<()> {
-    let mut file = EnvFile::load(&a.file.file)?;
+fn cmd_rm(a: &RmArgs, env: &EnvArgs) -> Result<()> {
+    let mut file = EnvFile::load(target_file(env)?)?;
     file.remove(&a.name)?;
     file.save()?;
     note!("{} removed {}", green("✓"), a.name);
@@ -497,8 +481,8 @@ fn selected(file: &EnvFile, keys: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn cmd_encrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
-    let mut file = EnvFile::load(&a.file.file)?;
+fn cmd_encrypt(a: &BulkArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+    let mut file = EnvFile::load(target_file(env)?)?;
     let names: Vec<String> = if a.keys.is_empty() {
         file.vars()
             .filter(|v| !v.is_encrypted() && file.should_encrypt(&v.name))
@@ -515,7 +499,7 @@ fn cmd_encrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
         note!(
             "{} {} is in {} mode; nothing needs encrypting",
             dim("·"),
-            a.file.file.display(),
+            target_file(env)?.display(),
             file.mode.as_str()
         );
         if a.keys.is_empty() && file.mode == envfile::Mode::Whitelist {
@@ -547,13 +531,13 @@ fn cmd_encrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_decrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
+fn cmd_decrypt(a: &BulkArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
     if a.keys.is_empty() {
         bail!(
             "decrypt requires an explicit -k (plaintext lands on disk, so there is no bulk default)"
         );
     }
-    let mut file = EnvFile::load(&a.file.file)?;
+    let mut file = EnvFile::load(target_file(env)?)?;
     let names: Vec<String> = selected(&file, &a.keys)
         .into_iter()
         .filter(|n| file.get(n).unwrap().is_encrypted())
@@ -581,7 +565,7 @@ fn cmd_decrypt(a: &BulkArgs, password_stdin: bool) -> Result<()> {
 
 // ── F6 passwd ────────────────────────────────────────────────────────────────
 
-fn cmd_passwd(a: &PasswdArgs) -> Result<()> {
+fn cmd_passwd(a: &PasswdArgs, env: &EnvArgs) -> Result<()> {
     let cfg = config::load()?;
     let old_pw = match cfg.password.as_deref() {
         Some(p) if !p.is_empty() => zeroize::Zeroizing::new(p.to_string()),
@@ -593,7 +577,7 @@ fn cmd_passwd(a: &PasswdArgs) -> Result<()> {
     // a failure halfway through would leave a mixed state.
     type Plaintexts = Vec<(String, zeroize::Zeroizing<String>)>;
     let mut files: Vec<(EnvFile, Plaintexts)> = Vec::new();
-    for path in &a.files {
+    for path in &env.files {
         let file = EnvFile::load(path)?;
         let mut items = Vec::new();
         for v in file.vars().filter(|v| v.is_encrypted()) {
@@ -624,10 +608,10 @@ fn cmd_passwd(a: &PasswdArgs) -> Result<()> {
     note!(
         "{} password changed; re-encrypted {count} item(s) across {} file(s) {}",
         green("✓"),
-        a.files.len(),
+        env.files.len(),
         dim(&written.display().to_string())
     );
-    if a.files.is_empty() {
+    if env.files.is_empty() {
         note!(
             "{} no files given: old ciphertext in other .env files can no longer be decrypted",
             yellow("⚠️")
