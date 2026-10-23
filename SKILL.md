@@ -94,6 +94,10 @@ Only `run` and `manage` are reserved at the root. `localenvx manage get NAME` re
 
 Set prints target paths and affected key names before prompting `[Y/n]`. Enter confirms; `n` cancels; `-y` / `--yes` skips the prompt. Noninteractive input requires `-y`, also when stdin is reserved for a set value. Set updates the last occurrence and removes earlier duplicates. Delete variables directly from the file when needed. All changes are prepared and validated before saving. Each file is replaced atomically; a multi-file edit is not a filesystem transaction.
 
+## Loss design
+
+This project is designed to prevent local plaintext storage by default; it does not take responsibility for loss prevention or recoverability. If the credential configuration is lost and encrypted values cannot be recovered, you must start over with new credentials and supply the original secrets again. Do not use this CLI to manage the only copy of any credential: keep an independent backup elsewhere.
+
 ## Credentials and backups
 
 `manage init` creates a version 2 TOML credential file containing a randomly generated 256-bit key:
