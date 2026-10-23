@@ -549,3 +549,60 @@ fn project_initialization_is_explicit_and_does_not_replace_user_credentials() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("already exists"));
 }
+
+#[test]
+fn missing_command_reports_status_and_suggestions_without_values() {
+    let p = Project::new();
+    let file = p.fixture(
+        "",
+        "A=synthetic-private-plain\nB=encrypted:v1:synthetic-private-ciphertext\n",
+    );
+    // No -e: verify discovery in the isolated project directory.
+    let output = p.run(&[]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for expected in [
+        "error: missing command",
+        "Status:",
+        "Active config:",
+        "initialized",
+        ".env.example",
+        "2 variables, 1 encrypted, 1 plaintext",
+        "localenvx --help",
+        "localenvx run -- <command>",
+        "localenvx init --project",
+    ] {
+        assert!(stderr.contains(expected), "missing {expected}: {stderr}");
+    }
+    assert!(!stderr.contains("synthetic-private"));
+    assert!(!stderr.contains("synthetic-test-password"));
+    // Invalid configurations must not expose parser diagnostics containing secrets.
+    std::fs::write(p.0.join("config.toml"), "synthetic-config-secret").unwrap();
+    let output = p.run(&["-e", path(&file)]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unusable"));
+    assert!(stderr.contains("Suggestions:"));
+    assert!(!stderr.contains("synthetic-config-secret"));
+    std::fs::remove_file(p.0.join("config.toml")).unwrap();
+    let output = p.run(&["-e", path(&file)]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not generated"));
+    assert!(stderr.contains("1 encrypted"));
+}
+
+#[test]
+fn missing_command_status_tolerates_missing_and_invalid_environment_files() {
+    let p = Project::new();
+    let file = p.fixture(
+        "",
+        "# @localenvx-mode:whitelist\n# @localenvx-mode:blacklist\nA=synthetic-private-value\n",
+    );
+    let output = p.run(&["-e", path(&file), "-e", "missing.vars", "--quiet"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("unreadable or invalid"));
+    assert!(stderr.contains("missing.vars: not found"));
+    assert!(stderr.contains("localenvx --help"));
+    assert!(!stderr.contains("synthetic-private-value"));
+}

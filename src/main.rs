@@ -5,6 +5,7 @@ mod expand;
 mod load;
 mod preview;
 mod session;
+mod status;
 mod term;
 mod ui;
 
@@ -233,7 +234,10 @@ fn dispatch(cli: &Cli) -> Result<()> {
         Some(Cmd::External(cmd)) => {
             cmd_run(&RunArgs { cmd: cmd.clone() }, &cli.env, cli.password_stdin)
         }
-        None => bail!("missing command; use localenvx [OPTIONS] -- COMMAND [ARGS...]"),
+        None => bail!(
+            "missing command\n\n{}",
+            status::format(&cli.env.files, cli.env.cascade.as_deref())
+        ),
         Some(Cmd::Init(a)) => cmd_init(a),
         Some(Cmd::Run(a)) => cmd_run(a, &cli.env, cli.password_stdin),
         Some(Cmd::Set(a)) => cmd_set(a, &cli.env, cli.password_stdin),
