@@ -4,7 +4,9 @@ Run `cargo test --locked --test cli`. These tests launch the compiled binary,
 use isolated temporary projects and synthetic credentials, and check exit status,
 stdout/stderr, persisted files, and downstream command behavior.
 
-The existing CI runs this suite on Linux, macOS, and Windows, on both x64 and
+Pushing a new `v*` tag starts the release workflow, which calls the test workflow
+before building and publishing release assets. Branch pushes and pull requests do
+not trigger CI. The test workflow runs this suite on Linux, macOS, and Windows, on both x64 and
 ARM64. Password interaction tests run on all six runners: Unix uses PTYs, and Windows
 uses ConPTY through the pinned pywinpty adapter installed by CI. Windows ARM64
 uses x64 Python under emulation to drive the native ARM64 CLI. Only Unix signal,
