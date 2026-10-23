@@ -2,6 +2,7 @@ mod config;
 mod crypto;
 mod envfile;
 mod load;
+mod preview;
 mod session;
 mod term;
 mod ui;
@@ -95,6 +96,9 @@ struct EnvArgs {
     /// Temporary NAME=value (repeatable, applied last without expansion)
     #[arg(short = 'v', global = true, value_parser = parse_variable)]
     variables: Vec<(String, String)>,
+    /// Print planned paths and temporary values without reading files or running
+    #[arg(long, global = true)]
+    debug: bool,
 }
 
 fn parse_variable(input: &str) -> std::result::Result<(String, String), String> {
@@ -198,6 +202,16 @@ fn main() {
 }
 
 fn dispatch(cli: &Cli) -> Result<()> {
+    if cli.env.debug {
+        println!(
+            "{}",
+            preview::format(
+                &load::planned_paths(&cli.env.files, cli.env.cascade.as_deref()),
+                &cli.env.variables
+            )
+        );
+        return Ok(());
+    }
     config::select_path(cli.config_file.clone());
     match cli.cmd.as_ref() {
         Some(Cmd::External(cmd)) => {
