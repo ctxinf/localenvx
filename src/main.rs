@@ -187,7 +187,19 @@ fn main() {
         cli.cmd,
         Some(Cmd::Run(_) | Cmd::External(_) | Cmd::Get(_)) | None
     );
-    term::set_quiet(cli.quiet.unwrap_or(quiet_default));
+    let quiet = cli
+        .quiet
+        .or_else(|| {
+            std::env::var("LOCALENVX_QUIET")
+                .ok()
+                .and_then(|value| match value.as_str() {
+                    "1" | "true" => Some(true),
+                    "0" | "false" => Some(false),
+                    _ => None,
+                })
+        })
+        .unwrap_or(quiet_default);
+    term::set_quiet(quiet);
     if let Err(e) = dispatch(&cli) {
         eprintln!("{} {e:#}", term::paint("31;1", "error:"));
         std::process::exit(1);

@@ -5,20 +5,23 @@ use std::sync::OnceLock;
 
 pub fn quiet() -> bool {
     static Q: OnceLock<bool> = OnceLock::new();
+    if let Some(quiet) = FORCE_QUIET.with(|c| c.get()) {
+        return quiet;
+    }
     *Q.get_or_init(|| {
         matches!(
             std::env::var("LOCALENVX_QUIET").as_deref(),
             Ok("1") | Ok("true")
         )
-    }) || FORCE_QUIET.with(|c| c.get())
+    })
 }
 
 thread_local! {
-    static FORCE_QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FORCE_QUIET: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 pub fn set_quiet(on: bool) {
-    FORCE_QUIET.with(|c| c.set(on));
+    FORCE_QUIET.with(|c| c.set(Some(on)));
 }
 
 pub fn color() -> bool {
