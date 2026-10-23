@@ -18,7 +18,7 @@ shell-specific expansion, and confirmation PTY tests remain `cfg(unix)`.
 | set | Multiple files, duplicate keys, confirmation, stdin values, empty values, invalid/conflicting arguments, missing keys, Unicode and space-containing paths |
 | get/run | File/process/temporary precedence, lazy expansion/decryption, no-expand, native subprocess environment and exit codes on every platform, all three invocation styles; Unix signals |
 | credentials | Explicit/project/user selection, ignored password environment, removed password flags/command, rejected legacy/malformed credentials, no key leakage in tested failures |
-| list/status | File/key/mode/encryption reports, no values or credentials, invalid/missing files, list without usable credentials |
+| list/status | All-file ls discovery, scoped help/options, file/key/mode/encryption reports, no values or credentials, invalid/missing files, list without usable credentials |
 | help/skill/debug/quiet | Credential-free help/guide/debug, output consistency, quiet override |
 
 Windows ACL behavior, Web UI HTTP/browser interactions, installers/upgrades,

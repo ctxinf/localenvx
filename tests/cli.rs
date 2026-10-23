@@ -1285,3 +1285,65 @@ fn native_child_receives_decrypted_environment_on_every_platform() {
         assert_eq!(text(&output), "child-secret\n");
     }
 }
+
+#[test]
+fn ls_all_discovers_only_env_files_without_credentials_or_values() {
+    let p = Project::new();
+    std::fs::remove_file(p.0.join("config.toml")).unwrap();
+    for (name, content) in [
+        (".env", "BASE=synthetic-private-value\n"),
+        (
+            ".env.local",
+            "SECRET=encrypted:v1:synthetic-corrupt-ciphertext\n",
+        ),
+        (".env.production", "PRODUCTION=hidden\n"),
+        (".env.local.tmp", "SKIP_TMP=hidden\n"),
+        ("other.env", "SKIP_OTHER=hidden\n"),
+    ] {
+        std::fs::write(p.0.join(name), content).unwrap();
+    }
+    std::fs::create_dir(p.0.join(".env.directory")).unwrap();
+    p.fixture("nested", "SKIP_NESTED=hidden\n");
+    let output = p.run(&["manage", "ls", "--all"]);
+    success(&output);
+    let report = text(&output);
+    for name in ["BASE", "SECRET", "PRODUCTION"] {
+        assert!(report.contains(name));
+    }
+    for private in [
+        "synthetic-private-value",
+        "synthetic-corrupt-ciphertext",
+        "hidden",
+        "SKIP_",
+        ".tmp",
+        ".env.directory",
+        "nested",
+    ] {
+        assert!(!report.contains(private), "{report}");
+    }
+    assert!(report.find(".env  ").unwrap() < report.find(".env.local").unwrap());
+    assert!(report.find(".env.local").unwrap() < report.find(".env.production").unwrap());
+    let output = p.run(&["manage", "ls"]);
+    success(&output);
+    assert!(text(&output).contains("BASE"));
+    assert!(!text(&output).contains("SECRET"));
+}
+
+#[test]
+fn ls_options_are_limited_and_all_handles_empty_directory() {
+    let p = Project::new();
+    let output = p.run(&["manage", "ls", "--all"]);
+    success(&output);
+    assert!(text(&output).contains("No .env files found"));
+    failure(
+        &p.run(&["manage", "ls", "--all", "-e", "file"]),
+        "cannot be used",
+    );
+    let output = p.run(&["manage", "ls", "--help"]);
+    success(&output);
+    assert!(text(&output).contains("--all"));
+    for option in ["--quiet", "--config-file", "--password-stdin", "--project"] {
+        assert!(!text(&output).contains(option));
+        assert!(!p.run(&["manage", "ls", option]).status.success());
+    }
+}

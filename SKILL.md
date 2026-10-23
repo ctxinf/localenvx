@@ -66,14 +66,16 @@ DATABASE_URL=encrypted:v1:BFc4vRxLq8mN2pQ...
 | `run [OPTIONS] [--] CMD [ARGS...]` | Explicit run, sharing the direct entry's resolution and execution |
 | `manage set NAME [VALUE] [--enc\|--plain] [--stdin] [-e FILE]... [-y]` | Write to every selected file after confirmation |
 | `manage get NAME [OPTIONS]` | Print the final environment value, using the same resolution as run; missing names are errors |
-| `manage ls [-e FILE]...` | List key names and encryption status only |
+| `manage ls [-e FILE]... [--all]` | List key names and encryption status only; --all scans the current directory |
 | `manage enc [-k GLOB]... [-e FILE]` | Bulk-encrypt one file according to its mode |
 | `manage dec -k GLOB... [-e FILE]` | Decrypt one file to plaintext |
 | `manage ui [--port N] [--strict-port]` | Local web UI |
 
 Options belong to each command and are not global; place them after the command (for example, `localenvx manage get -e .env KEY`). Run may be omitted.
 
-All environment-file selectors use `-e`; omitted selectors use `.env`. `--config-file PATH` selects the credential config for run and management commands except status, including `init` and `ui`, ahead of the existing default config location. Run and get still require initialization, including for plaintext input. Debug does not.
+All environment-file selectors use `-e`; omitted selectors use `.env`. `--config-file PATH` selects the credential config for run and management commands except status and ls, including `init` and `ui`, ahead of the existing default config location. Run and get still require initialization, including for plaintext input. Debug does not.
+
+`manage ls` accepts only `-e FILE` (repeatable) or `--all`, plus help. `--all` lists `.env` and `.env.*` files in the current directory in filename order, excluding temporary `.tmp` files and directories, without recursion. It conflicts with `-e`. No credentials are loaded.
 
 Run/get options:
 

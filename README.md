@@ -36,6 +36,8 @@ For first-time setup, run `init` before running your app:
 localenvx manage init
 # Check credentials and .env status without revealing values.
 localenvx manage status
+# List key names and encryption status across all .env files in this directory.
+localenvx manage ls --all
 # Save an encrypted secret in .env.
 localenvx manage set API_TOKEN example-secret --enc -y
 # Save a readable value in .env.

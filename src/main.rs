@@ -90,7 +90,6 @@ struct InitEntry {
 }
 entry!(SetEntry, SetArgs, Files);
 entry!(GetEntry, GetArgs, ReadArgs);
-entry!(ListEntry, ListArgs, Files);
 entry!(BulkEntry, BulkArgs, Files);
 entry!(UiEntry, UiArgs, EmptyArgs);
 
@@ -109,7 +108,7 @@ enum ManageCmd {
     /// Print a variable's value
     Get(GetEntry),
     /// List key names and encryption status
-    Ls(ListEntry),
+    Ls(ListArgs),
     /// Encrypt plaintext values
     Enc(BulkEntry),
     /// Decrypt values to plaintext on disk
@@ -206,7 +205,13 @@ struct GetArgs {
 }
 
 #[derive(Args)]
-struct ListArgs {}
+struct ListArgs {
+    #[command(flatten)]
+    files: Files,
+    /// List all .env and .env.* files in the current directory
+    #[arg(long, conflicts_with = "files")]
+    all: bool,
+}
 
 #[derive(Args)]
 struct BulkArgs {
@@ -324,10 +329,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
                     },
                 )
             }
-            ManageCmd::Ls(a) => {
-                configure(&a.credentials, false, false)?;
-                cmd_list(&a.args, &(&a.env).into())
-            }
+            ManageCmd::Ls(a) => cmd_list(a),
             ManageCmd::Enc(a) => {
                 configure(&a.credentials, false, false)?;
                 cmd_encrypt(&a.args, &(&a.env).into())
@@ -609,8 +611,28 @@ fn cmd_get(a: &GetArgs, env: &EnvArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_list(_a: &ListArgs, env: &EnvArgs) -> Result<()> {
-    let (paths, _) = load::default_paths(&env.files);
+fn cmd_list(a: &ListArgs) -> Result<()> {
+    let paths = if a.all {
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(".")? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_text = name.to_string_lossy();
+            if (name_text == ".env" || name_text.starts_with(".env."))
+                && !name_text.ends_with(".tmp")
+                && entry.path().is_file()
+            {
+                paths.push(PathBuf::from(name));
+            }
+        }
+        paths.sort();
+        if paths.is_empty() {
+            println!("No .env files found in the current directory.");
+        }
+        paths
+    } else {
+        load::default_paths(&a.files.files).0
+    };
     for path in &paths {
         let file = EnvFile::load(path)?;
         println!(
