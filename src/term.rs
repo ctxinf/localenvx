@@ -53,3 +53,44 @@ macro_rules! note {
     };
 }
 pub(crate) use note;
+
+fn confirmation_answer(answer: &str) -> Option<bool> {
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "" | "y" | "yes" => Some(true),
+        "n" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+pub fn confirm(prompt: &str, yes: bool) -> anyhow::Result<bool> {
+    use std::io::Write;
+    if yes {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!("confirmation requires a terminal; pass -y to proceed noninteractively");
+    }
+    loop {
+        eprint!("{prompt} [Y/n] ");
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer)? == 0 {
+            anyhow::bail!("confirmation input ended without an answer");
+        }
+        if let Some(answer) = confirmation_answer(&answer) {
+            return Ok(answer);
+        }
+        eprintln!("Please answer yes or no.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn enter_means_yes_but_invalid_answers_do_not() {
+        assert_eq!(super::confirmation_answer("\n"), Some(true));
+        assert_eq!(super::confirmation_answer("YES"), Some(true));
+        assert_eq!(super::confirmation_answer("n"), Some(false));
+        assert_eq!(super::confirmation_answer("anything"), None);
+    }
+}

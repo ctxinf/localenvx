@@ -136,6 +136,9 @@ struct SetArgs {
     /// Read the value from stdin (keeps it out of shell history)
     #[arg(long)]
     stdin: bool,
+    /// Skip the write confirmation
+    #[arg(short = 'y', long)]
+    yes: bool,
 }
 
 #[derive(Args)]
@@ -149,6 +152,9 @@ struct ListArgs {}
 #[derive(Args)]
 struct RmArgs {
     name: String,
+    /// Skip the removal confirmation
+    #[arg(short = 'y', long)]
+    yes: bool,
 }
 
 #[derive(Args)]
@@ -400,7 +406,30 @@ fn cmd_set(a: &SetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
         (None, false) => bail!("missing VALUE (or use --stdin to read it from standard input)"),
     };
 
-    let mut file = open_or_new(target_file(env)?)?;
+    let paths = edit_paths(env)?;
+    let mut files: Vec<_> = paths
+        .iter()
+        .map(|path| open_or_new(path))
+        .collect::<Result<_>>()?;
+    for file in &files {
+        eprintln!("write {} to {}", a.name, file.path.display());
+        let count = file.vars().filter(|v| v.name == a.name).count();
+        if count > 0 {
+            eprintln!(
+                "{} {}: {} ({} existing occurrence(s) will be replaced)",
+                yellow("warn:"),
+                file.path.display(),
+                a.name,
+                count
+            );
+        }
+    }
+    if (a.stdin || password_stdin) && !a.yes {
+        bail!("stdin is reserved for input; pass -y to confirm the write");
+    }
+    if !term::confirm("Write these files?", a.yes)? {
+        return Ok(());
+    }
     let want_enc = if a.enc {
         Some(true)
     } else if a.plain {
@@ -408,25 +437,43 @@ fn cmd_set(a: &SetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
     } else {
         None
     };
-    // Insert the line first, then let the effective intent decide whether to encrypt.
-    file.upsert(&a.name, "", want_enc)?;
-    let encrypt = want_enc.unwrap_or_else(|| file.should_encrypt(&a.name));
-    let stored = if encrypt {
-        let mut sess = Session::open(password_stdin)?;
-        crypto::encrypt(sess.key()?, &a.name, &value)?
-    } else {
-        value
-    };
-    file.set_value(&a.name, &stored)?;
-    file.save()?;
-    note!(
-        "{} {} → {} ({})",
-        green("✓"),
-        a.name,
-        target_file(env)?.display(),
-        if encrypt { "encrypted" } else { "plain" }
-    );
+    let mut sess = None;
+    for file in &mut files {
+        file.upsert(&a.name, "", want_enc)?;
+        let encrypt = want_enc.unwrap_or_else(|| file.should_encrypt(&a.name));
+        let stored = if encrypt {
+            if sess.is_none() {
+                sess = Some(Session::open(password_stdin)?);
+            }
+            crypto::encrypt(sess.as_mut().unwrap().key()?, &a.name, &value)?
+        } else {
+            value.clone()
+        };
+        file.set_value(&a.name, &stored)?;
+        file.validate_render()?;
+    }
+    for file in &files {
+        file.save()?;
+        note!("{} {} → {}", green("✓"), a.name, file.path.display());
+    }
     Ok(())
+}
+
+fn edit_paths(env: &EnvArgs) -> Result<Vec<PathBuf>> {
+    let (paths, _) = load::default_paths(&env.files);
+    let mut unique = Vec::new();
+    let mut identities = std::collections::HashSet::new();
+    for path in paths {
+        let identity = if path.exists() {
+            std::fs::canonicalize(&path)?
+        } else {
+            std::path::absolute(&path)?
+        };
+        if identities.insert(identity) {
+            unique.push(path);
+        }
+    }
+    Ok(unique)
 }
 
 fn cmd_get(a: &GetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
@@ -466,9 +513,36 @@ fn cmd_list(_a: &ListArgs, env: &EnvArgs) -> Result<()> {
 }
 
 fn cmd_rm(a: &RmArgs, env: &EnvArgs) -> Result<()> {
-    let mut file = EnvFile::load(target_file(env)?)?;
-    file.remove(&a.name)?;
-    file.save()?;
+    let paths = edit_paths(env)?;
+    let mut files: Vec<_> = paths
+        .iter()
+        .map(|path| EnvFile::load(path))
+        .collect::<Result<_>>()?;
+    let mut matched = false;
+    for file in &mut files {
+        let count = file.vars().filter(|v| v.name == a.name).count();
+        if count == 0 {
+            continue;
+        }
+        matched = true;
+        eprintln!(
+            "remove {} from {} ({} occurrence(s))",
+            a.name,
+            file.path.display(),
+            count
+        );
+        file.remove(&a.name)?;
+        file.validate_render()?;
+    }
+    if !matched {
+        bail!("no variable named {} in the selected files", a.name);
+    }
+    if !term::confirm("Remove from these files?", a.yes)? {
+        return Ok(());
+    }
+    for file in &files {
+        file.save()?;
+    }
     note!("{} removed {}", green("✓"), a.name);
     Ok(())
 }

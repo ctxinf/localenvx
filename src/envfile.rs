@@ -401,9 +401,7 @@ impl EnvFile {
         out
     }
 
-    /// Atomic write-back with mode 0600.
-    pub fn save(&self) -> Result<()> {
-        use std::io::Write;
+    pub fn validate_render(&self) -> Result<()> {
         let text = self.render();
         let reparsed = Self::from_str_at(&text, &self.path)?;
         if self.vars().map(|v| (&v.name, &v.value)).collect::<Vec<_>>()
@@ -417,6 +415,14 @@ impl EnvFile {
                 self.path.display()
             );
         }
+        Ok(())
+    }
+
+    /// Atomic write-back with mode 0600.
+    pub fn save(&self) -> Result<()> {
+        use std::io::Write;
+        self.validate_render()?;
+        let text = self.render();
         let tmp = self.path.with_extension(format!(
             "{}.localenvx.tmp",
             self.path
