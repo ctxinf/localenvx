@@ -533,13 +533,15 @@ fn cmd_rm(a: &RmArgs, env: &EnvArgs) -> Result<()> {
         .iter()
         .map(|path| EnvFile::load(path))
         .collect::<Result<_>>()?;
-    let mut matched = false;
+    files.retain(|file| file.get(&a.name).is_some());
+    if files.is_empty() {
+        bail!("no variable named {} in the selected files", a.name);
+    }
     for file in &mut files {
         let count = file.vars().filter(|v| v.name == a.name).count();
         if count == 0 {
             continue;
         }
-        matched = true;
         eprintln!(
             "remove {} from {} ({} occurrence(s))",
             a.name,
@@ -548,9 +550,6 @@ fn cmd_rm(a: &RmArgs, env: &EnvArgs) -> Result<()> {
         );
         file.remove(&a.name)?;
         file.validate_render()?;
-    }
-    if !matched {
-        bail!("no variable named {} in the selected files", a.name);
     }
     if !term::confirm("Remove from these files?", a.yes)? {
         return Ok(());
