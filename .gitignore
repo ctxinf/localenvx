@@ -14,3 +14,7 @@ config.toml
 .idea/
 .vscode/
 *.swp
+*.md
+
+# Private design document
+/design.md

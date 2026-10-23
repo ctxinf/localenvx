@@ -2,8 +2,6 @@
 
 Encrypted environment-variable manager for local development. **No plaintext secrets on disk**, so a coding agent that happens to `grep` or read files gets nothing.
 
-Requirements and threat model live in [design.md](./design.md).
-
 ```bash
 cargo build --release              # target/release/localenvx
 scripts/install-local.sh           # build and install into ~/.local/bin (BIN_DIR= to change, --uninstall to remove)
@@ -137,7 +135,7 @@ XChaCha20-Poly1305, with the key derived from the password via argon2id (m=64MB,
 
 ## Known trade-offs
 
-The password is stored in plaintext in the config by default, so this **does not protect against active theft** (design.md §1.2 T2). To tighten it, move the password out of the config and add these denies to your Claude Code settings:
+The password is stored in plaintext in the config by default, so this **does not protect against active theft**. To tighten it, move the password out of the config and add these denies to your Claude Code settings:
 
 ```
 Read(**/.env*)

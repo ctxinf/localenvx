@@ -1,7 +1,7 @@
 //! F7 — local web UI.
 //!
 //! A foreground process bound to 127.0.0.1 only, with no token and no timeout; Ctrl-C quits.
-//! Security notes live in design.md §F7: check Origin / Sec-Fetch-Site, send no-store, mask values by default.
+//! Security measures: check Origin / Sec-Fetch-Site, send no-store, mask values by default.
 
 use anyhow::{Context, Result, bail};
 use std::io::Cursor;
