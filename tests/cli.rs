@@ -463,7 +463,7 @@ fn get_reports_read_files_and_winning_source_unless_quiet() {
             } else {
                 assert!(details.contains(path(&first)), "{details}");
                 assert!(details.contains(path(&second)), "{details}");
-                let mut files = vec![path(&first), path(&second)];
+                let mut files = [path(&first), path(&second)];
                 if !options.contains(&"-o") {
                     files.reverse();
                 }

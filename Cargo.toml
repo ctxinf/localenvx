@@ -1,13 +1,13 @@
 [package]
 name = "localenvx"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A local encrypted .env manager."
 license = "MIT"
 repository = "https://github.com/ctxinf/localenvx"
 readme = "README.md"
-include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "SKILL.md", "LICENSE", "tests/**"]
+include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "CHANGELOG.md", "SKILL.md", "LICENSE", "tests/**"]
 
 [dependencies]
 anyhow = "1"

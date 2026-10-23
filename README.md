@@ -75,6 +75,8 @@ Download from [GitHub Releases](https://github.com/ctxinf/localenvx/releases) fo
 
 ## More
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes and migration instructions.
+
 Run `localenvx --skill` or read [SKILL.md](SKILL.md) for the complete guide.
 
 
