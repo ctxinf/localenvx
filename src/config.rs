@@ -90,9 +90,6 @@ pub fn config_path() -> Result<PathBuf> {
 
 /// Resolve whole credential files; never mix a password with another file's salt.
 fn resolve_path(user: &Path, cwd: &Path) -> Result<PathBuf> {
-    if user.try_exists()? {
-        return Ok(user.to_path_buf());
-    }
     for dir in cwd.ancestors() {
         let project = dir.join(".localenvx/config.toml");
         if project.try_exists()? {

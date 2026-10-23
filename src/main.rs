@@ -256,7 +256,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
             );
             Ok(())
         }
-        Some(Cmd::Init(a)) => cmd_init(a),
+        Some(Cmd::Init(a)) => cmd_init(a, cli.project),
         Some(Cmd::Run(a)) => cmd_run(a, &cli.env, cli.password_stdin),
         Some(Cmd::Set(a)) => cmd_set(a, &cli.env, cli.password_stdin),
         Some(Cmd::Get(a)) => cmd_get(a, &cli.env, cli.password_stdin),
@@ -271,13 +271,50 @@ fn dispatch(cli: &Cli) -> Result<()> {
 
 // ── F6 init ──────────────────────────────────────────────────────────────────
 
-fn cmd_init(a: &InitArgs) -> Result<()> {
+/// Ciphertexts have no credential identifier, so reject any existing encryption.
+/// Do not follow directory symlinks (which could leave the project or form cycles).
+fn check_project_initialization(root: &std::path::Path) -> Result<()> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                if name != ".git" {
+                    pending.push(entry.path());
+                }
+            } else if name == ".env" || name.starts_with(".env.") {
+                // File symlinks are checked too: runtime loading follows them.
+                let file = EnvFile::load(&entry.path()).map_err(|_| {
+                    anyhow::anyhow!(
+                        "cannot initialize project credentials: cannot inspect {}",
+                        entry.path().display()
+                    )
+                })?;
+                if file.vars().any(|var| var.is_encrypted()) {
+                    bail!(
+                        "cannot initialize project credentials: {} contains encrypted values that may use user credentials; decrypt existing values with the original credentials first (no files changed)",
+                        entry.path().display()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_init(a: &InitArgs, project: bool) -> Result<()> {
     let path = config::config_path()?;
     if path.exists() && !a.force {
         bail!(
             "{} already exists; pass --force to overwrite (old ciphertext becomes undecryptable)",
             path.display()
         );
+    }
+    if project {
+        check_project_initialization(&std::env::current_dir()?)?;
     }
     let pw = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         session::prompt_new_password()?

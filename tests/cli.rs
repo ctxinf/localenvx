@@ -476,13 +476,13 @@ fn process_environment_dependencies_are_lazy_too() {
 }
 
 #[test]
-fn user_credentials_win_and_project_credentials_are_a_fallback() {
+fn project_credentials_win_and_user_credentials_are_a_fallback() {
     let p = Project::new();
     let file = p.fixture("nested", "");
     let project_dir = p.0.join(".localenvx");
     std::fs::create_dir_all(&project_dir).unwrap();
     std::fs::copy(p.0.join("config.toml"), project_dir.join("config.toml")).unwrap();
-    // Deliberately invalid user config must fail rather than silently falling back.
+    // Project credentials take precedence even when user credentials are invalid.
     let user_dir = p.0.join("user");
     std::fs::create_dir_all(&user_dir).unwrap();
     let command = || {
@@ -504,8 +504,33 @@ fn user_credentials_win_and_project_credentials_are_a_fallback() {
     std::fs::copy(p.0.join("config.toml"), user_dir.join("config.toml")).unwrap();
     std::fs::write(user_dir.join("config.toml"), "invalid config").unwrap();
     let output = command().args(["get", "A"]).output().unwrap();
+    success(&output);
+    assert_eq!(text(&output), "synthetic\n");
+    // Without project credentials, the invalid user configuration is reported.
+    std::fs::remove_file(project_dir.join("config.toml")).unwrap();
+    let output = command().args(["get", "A"]).output().unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("failed to parse"));
+    std::fs::copy(p.0.join("config.toml"), user_dir.join("config.toml")).unwrap();
+    success(&command().args(["get", "A"]).output().unwrap());
+    std::fs::copy(p.0.join("config.toml"), project_dir.join("config.toml")).unwrap();
+    std::fs::write(project_dir.join("config.toml"), "invalid config").unwrap();
+    let output = command().args(["get", "A"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to parse"));
+    // An explicit config overrides an invalid project configuration.
+    let output = command()
+        .args([
+            "--config-file",
+            path(&user_dir.join("config.toml")),
+            "get",
+            "A",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    std::fs::write(user_dir.join("config.toml"), "invalid config").unwrap();
+    std::fs::copy(p.0.join("config.toml"), project_dir.join("config.toml")).unwrap();
     // Explicit selection takes precedence even when the user config is invalid.
     let output = command()
         .args([
@@ -628,4 +653,38 @@ fn missing_command_is_brief_and_help_matches_help_flag() {
     assert_eq!(command.stdout, flag.stdout);
     assert!(command.stderr.is_empty());
     assert!(text(&command).contains("status"));
+}
+
+#[test]
+fn project_initialization_rejects_existing_user_encryption_before_password_prompt() {
+    let p = Project::new();
+    let file = p.fixture("nested/deep", "");
+    success(&p.run(&[
+        "-e",
+        path(&file),
+        "set",
+        "SECRET",
+        "synthetic",
+        "--enc",
+        "-y",
+    ]));
+    let original = std::fs::read(&file).unwrap();
+    for force in [false, true] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_localenvx"));
+        cmd.current_dir(&p.0)
+            .env_clear()
+            .env("LOCALENVX_CONFIG_DIR", &p.0)
+            .args(["init", "--project"]);
+        if force {
+            cmd.arg("--force");
+        }
+        let output = cmd.output().unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("contains encrypted values"), "{stderr}");
+        assert!(!stderr.contains("new password:"));
+        assert!(!p.0.join(".localenvx/config.toml").exists());
+        assert_eq!(std::fs::read(&file).unwrap(), original);
+    }
+    success(&p.run(&["-e", path(&file), "get", "SECRET"]));
 }
