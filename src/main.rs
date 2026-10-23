@@ -230,9 +230,9 @@ fn cmd_init(a: &InitArgs) -> Result<()> {
 // ── F2/F3/F4 run ─────────────────────────────────────────────────────────────
 
 fn cmd_run(a: &RunArgs, password_stdin: bool) -> Result<()> {
-    let (paths, explicit) = load::default_paths(&a.files);
+    let (paths, _explicit) = load::default_paths(&a.files);
     let mut sess = Session::open(password_stdin)?;
-    let loaded = load::load_files(&mut sess, &paths, explicit)?;
+    let loaded = load::load_files(&mut sess, &paths, false, a.r#override, &[])?;
 
     for m in &loaded.missing {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
@@ -361,9 +361,9 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
 }
 
 fn cmd_get(a: &GetArgs, password_stdin: bool) -> Result<()> {
-    let (paths, explicit) = load::default_paths(&a.files);
+    let (paths, _explicit) = load::default_paths(&a.files);
     let mut sess = Session::open(password_stdin)?;
-    let loaded = load::load_files(&mut sess, &paths, explicit)?;
+    let loaded = load::load_files(&mut sess, &paths, false, a.r#override, &[])?;
     for m in &loaded.missing {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
     }
