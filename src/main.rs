@@ -10,6 +10,7 @@ mod ui;
 use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::envfile::EnvFile;
@@ -32,15 +33,19 @@ struct Cli {
     /// Credential config path (overrides the default config location)
     #[arg(long, global = true)]
     config_file: Option<PathBuf>,
-    /// Silence the stderr summary entirely
-    #[arg(long, short, global = true)]
-    quiet: bool,
+    /// Silence summaries (run/get default to true); use --quiet=false for details
+    #[arg(long, short, global = true, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    quiet: Option<bool>,
+    #[command(flatten)]
+    env: EnvArgs,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
     /// Generate a salt, set the password and write the config
     Init(InitArgs),
     /// Load .env and exec the child process (no shell involved)
@@ -76,16 +81,21 @@ struct InitArgs {
     force: bool,
 }
 
+#[derive(Args, Default)]
+struct EnvArgs {
+    /// Env files (repeatable); defaults to .env
+    #[arg(short = 'e', global = true)]
+    files: Vec<PathBuf>,
+    /// Override the process environment and let later files win
+    #[arg(short = 'o', long = "override", global = true)]
+    r#override: bool,
+}
+
 #[derive(Args)]
 struct RunArgs {
-    /// env files, precedence increasing left to right; defaults to .env
-    files: Vec<PathBuf>,
-    /// Let files override the real process environment (the default is the opposite)
-    #[arg(long)]
-    r#override: bool,
-    /// The command to run, written after `--`
-    #[arg(last = true, required = true)]
-    cmd: Vec<String>,
+    /// Command and arguments, optionally preceded by --
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    cmd: Vec<OsString>,
 }
 
 #[derive(Args)]
@@ -115,12 +125,6 @@ struct SetArgs {
 #[derive(Args)]
 struct GetArgs {
     name: String,
-    /// Env files, precedence increasing left to right; defaults to .env
-    #[arg(short = 'f', long = "file")]
-    files: Vec<PathBuf>,
-    /// Let files override the real process environment
-    #[arg(long)]
-    r#override: bool,
 }
 
 #[derive(Args)]
@@ -165,9 +169,11 @@ struct UiArgs {
 
 fn main() {
     let cli = Cli::parse();
-    if cli.quiet {
-        term::set_quiet(true);
-    }
+    let quiet_default = matches!(
+        cli.cmd,
+        Some(Cmd::Run(_) | Cmd::External(_) | Cmd::Get(_)) | None
+    );
+    term::set_quiet(cli.quiet.unwrap_or(quiet_default));
     if let Err(e) = dispatch(&cli) {
         eprintln!("{} {e:#}", term::paint("31;1", "error:"));
         std::process::exit(1);
@@ -176,17 +182,21 @@ fn main() {
 
 fn dispatch(cli: &Cli) -> Result<()> {
     config::select_path(cli.config_file.clone());
-    match &cli.cmd {
-        Cmd::Init(a) => cmd_init(a),
-        Cmd::Run(a) => cmd_run(a, cli.password_stdin),
-        Cmd::Set(a) => cmd_set(a, cli.password_stdin),
-        Cmd::Get(a) => cmd_get(a, cli.password_stdin),
-        Cmd::List(a) => cmd_list(a),
-        Cmd::Rm(a) => cmd_rm(a),
-        Cmd::Encrypt(a) => cmd_encrypt(a, cli.password_stdin),
-        Cmd::Decrypt(a) => cmd_decrypt(a, cli.password_stdin),
-        Cmd::Passwd(a) => cmd_passwd(a),
-        Cmd::Ui(a) => ui::serve(a.port, a.strict_port, cli.password_stdin),
+    match cli.cmd.as_ref() {
+        Some(Cmd::External(cmd)) => {
+            cmd_run(&RunArgs { cmd: cmd.clone() }, &cli.env, cli.password_stdin)
+        }
+        None => bail!("missing command; use localenvx [OPTIONS] -- COMMAND [ARGS...]"),
+        Some(Cmd::Init(a)) => cmd_init(a),
+        Some(Cmd::Run(a)) => cmd_run(a, &cli.env, cli.password_stdin),
+        Some(Cmd::Set(a)) => cmd_set(a, cli.password_stdin),
+        Some(Cmd::Get(a)) => cmd_get(a, &cli.env, cli.password_stdin),
+        Some(Cmd::List(a)) => cmd_list(a),
+        Some(Cmd::Rm(a)) => cmd_rm(a),
+        Some(Cmd::Encrypt(a)) => cmd_encrypt(a, cli.password_stdin),
+        Some(Cmd::Decrypt(a)) => cmd_decrypt(a, cli.password_stdin),
+        Some(Cmd::Passwd(a)) => cmd_passwd(a),
+        Some(Cmd::Ui(a)) => ui::serve(a.port, a.strict_port, cli.password_stdin),
     }
 }
 
@@ -229,10 +239,10 @@ fn cmd_init(a: &InitArgs) -> Result<()> {
 
 // ── F2/F3/F4 run ─────────────────────────────────────────────────────────────
 
-fn cmd_run(a: &RunArgs, password_stdin: bool) -> Result<()> {
-    let (paths, _explicit) = load::default_paths(&a.files);
+fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+    let (paths, _explicit) = load::default_paths(&env.files);
     let mut sess = Session::open(password_stdin)?;
-    let loaded = load::load_files(&mut sess, &paths, false, a.r#override, &[])?;
+    let loaded = load::load_files(&mut sess, &paths, false, env.r#override, &[])?;
 
     for m in &loaded.missing {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
@@ -243,7 +253,7 @@ fn cmd_run(a: &RunArgs, password_stdin: bool) -> Result<()> {
     cmd.args(&a.cmd[1..]);
     for e in &loaded.entries {
         let in_env = std::env::var_os(&e.name).is_some();
-        if !in_env || a.r#override {
+        if !in_env || env.r#override {
             cmd.env(&e.name, e.value.as_str());
         } else {
             note!(
@@ -253,7 +263,7 @@ fn cmd_run(a: &RunArgs, password_stdin: bool) -> Result<()> {
             );
         }
     }
-    exec(cmd, &a.cmd[0])
+    exec(cmd, &a.cmd[0].to_string_lossy())
 }
 
 /// Replace ourselves via execve: no shell, so exit codes and signals pass through naturally.
@@ -360,16 +370,16 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_get(a: &GetArgs, password_stdin: bool) -> Result<()> {
-    let (paths, _explicit) = load::default_paths(&a.files);
+fn cmd_get(a: &GetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+    let (paths, _explicit) = load::default_paths(&env.files);
     let mut sess = Session::open(password_stdin)?;
-    let loaded = load::load_files(&mut sess, &paths, false, a.r#override, &[])?;
+    let loaded = load::load_files(&mut sess, &paths, false, env.r#override, &[])?;
     for m in &loaded.missing {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
     }
     let file_value = loaded.entries.iter().find(|e| e.name == a.name);
     let process_value = std::env::var_os(&a.name);
-    if let Some(value) = process_value.filter(|_| !a.r#override || file_value.is_none()) {
+    if let Some(value) = process_value.filter(|_| !env.r#override || file_value.is_none()) {
         use std::io::Write;
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(value.as_encoded_bytes())?;
@@ -563,4 +573,54 @@ fn cmd_passwd(a: &PasswdArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn direct_and_explicit_run_preserve_child_arguments() {
+        for argv in [
+            vec!["localenvx", "-e", "first.vars", "echo", "-e", "child"],
+            vec![
+                "localenvx",
+                "run",
+                "-e",
+                "first.vars",
+                "--",
+                "echo",
+                "-e",
+                "child",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert_eq!(cli.env.files, vec![PathBuf::from("first.vars")]);
+            let cmd = match cli.cmd.unwrap() {
+                Cmd::Run(args) => args.cmd,
+                Cmd::External(cmd) => cmd,
+                _ => panic!("expected run"),
+            };
+            assert_eq!(cmd, vec!["echo", "-e", "child"]);
+        }
+    }
+
+    #[test]
+    fn builtin_names_and_boolean_quiet() {
+        assert!(matches!(
+            Cli::try_parse_from(["x", "get", "KEY"]).unwrap().cmd,
+            Some(Cmd::Get(_))
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["x", "--", "get", "KEY"]).unwrap().cmd,
+            Some(Cmd::External(_))
+        ));
+        assert_eq!(
+            Cli::try_parse_from(["x", "-q=false", "echo"])
+                .unwrap()
+                .quiet,
+            Some(false)
+        );
+        assert!(Cli::try_parse_from(["x", "-p", "KEY"]).is_err());
+    }
 }
