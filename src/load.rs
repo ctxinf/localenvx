@@ -44,6 +44,7 @@ pub fn load_files(
     allow_missing: bool,
     override_env: bool,
     variables: &[(String, String)],
+    no_expand: bool,
 ) -> Result<Loaded> {
     let mut out = Loaded::default();
     let mut files = Vec::new();
@@ -60,16 +61,41 @@ pub fn load_files(
         }
     }
     select_files(&mut out, &files, override_env);
-    // Do not derive a key or validate ciphertext that cannot reach the child.
-    out.entries.retain(|entry| {
-        !variables.iter().any(|(name, _)| *name == entry.name)
-            && (override_env || std::env::var_os(&entry.name).is_none())
-    });
-    for entry in &mut out.entries {
+    out.entries
+        .retain(|entry| override_env || std::env::var_os(&entry.name).is_none());
+    let mut needed: std::collections::HashSet<String> = out
+        .entries
+        .iter()
+        .filter(|entry| !variables.iter().any(|(name, _)| *name == entry.name))
+        .map(|entry| entry.name.clone())
+        .collect();
+    if !no_expand {
+        for (_, value) in std::env::vars_os() {
+            if let Some(value) = value.to_str() {
+                needed.extend(crate::expand::referenced_names(value));
+            }
+        }
+    }
+    let mut done = std::collections::HashSet::new();
+    loop {
+        let Some(i) = out
+            .entries
+            .iter()
+            .position(|entry| needed.contains(&entry.name) && !done.contains(&entry.name))
+        else {
+            break;
+        };
+        let entry = &mut out.entries[i];
+        // A value referenced during expansion is effective even if -v replaces its own key later.
         if entry.encrypted {
             entry.value = crypto::decrypt(sess.key()?, &entry.name, &entry.value)?;
         }
+        if !no_expand {
+            needed.extend(crate::expand::referenced_names(&entry.value));
+        }
+        done.insert(entry.name.clone());
     }
+    out.entries.retain(|entry| done.contains(&entry.name));
     Ok(out)
 }
 

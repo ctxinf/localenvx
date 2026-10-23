@@ -1,0 +1,275 @@
+[
+  {
+    "input": [
+      [
+        "A",
+        "hello"
+      ],
+      [
+        "B",
+        "$A/${MISSING:-world}"
+      ]
+    ],
+    "expected": [
+      "hello",
+      "hello/world"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        ""
+      ],
+      [
+        "B",
+        "${A-x}|${A:-y}|${A+z}|${A:+w}"
+      ]
+    ],
+    "expected": [
+      "",
+      "x|y||"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "$A"
+      ]
+    ],
+    "expected": [
+      ""
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "x$A"
+      ]
+    ],
+    "expected": [
+      "x"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "$B"
+      ],
+      [
+        "B",
+        "$A"
+      ]
+    ],
+    "expected": [
+      "",
+      ""
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "${NONE:-${B:-fallback}}"
+      ],
+      [
+        "B",
+        "future"
+      ]
+    ],
+    "expected": [
+      "future",
+      "future"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "\\$B"
+      ],
+      [
+        "B",
+        "value"
+      ],
+      [
+        "C",
+        "$A"
+      ]
+    ],
+    "expected": [
+      "$B",
+      "value",
+      "$B"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "${MISSING}-$missing-$$-$9-$-"
+      ]
+    ],
+    "expected": [
+      "--$$-$9-$-"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "value"
+      ],
+      [
+        "B",
+        "${A:+${A}-ok}"
+      ]
+    ],
+    "expected": [
+      "value",
+      "value-ok"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "${MISSING:-a-b+c}"
+      ]
+    ],
+    "expected": [
+      "a-b+c"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "$B"
+      ],
+      [
+        "B",
+        "$C"
+      ],
+      [
+        "C",
+        "done"
+      ]
+    ],
+    "expected": [
+      "done",
+      "done",
+      "done"
+    ]
+  },
+  {
+    "input": [
+      [
+        "2",
+        "$A"
+      ],
+      [
+        "1",
+        "one"
+      ],
+      [
+        "A",
+        "$1"
+      ]
+    ],
+    "expected": [
+      "$1",
+      "one",
+      "$1"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "$$"
+      ],
+      [
+        "B",
+        "$A"
+      ]
+    ],
+    "expected": [
+      "$$",
+      "$"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "$'"
+      ],
+      [
+        "B",
+        "prefix$A-suffix"
+      ]
+    ],
+    "expected": [
+      "$'",
+      "prefix-suffix-suffix"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "$`"
+      ],
+      [
+        "B",
+        "prefix$A-suffix"
+      ]
+    ],
+    "expected": [
+      "$`",
+      "prefixprefix-suffix"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "${A:-fallback}"
+      ]
+    ],
+    "expected": [
+      "fallback"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "${A+other}"
+      ]
+    ],
+    "expected": [
+      "other"
+    ]
+  },
+  {
+    "input": [
+      [
+        "A",
+        "\\\\$B"
+      ],
+      [
+        "B",
+        "x"
+      ]
+    ],
+    "expected": [
+      "\\$B",
+      "x"
+    ]
+  }
+]

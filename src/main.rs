@@ -1,6 +1,7 @@
 mod config;
 mod crypto;
 mod envfile;
+mod expand;
 mod load;
 mod preview;
 mod session;
@@ -99,6 +100,9 @@ struct EnvArgs {
     /// Print planned paths and temporary values without reading files or running
     #[arg(long, global = true)]
     debug: bool,
+    /// Leave variable references literal
+    #[arg(long, global = true)]
+    no_expand: bool,
 }
 
 fn parse_variable(input: &str) -> std::result::Result<(String, String), String> {
@@ -270,7 +274,10 @@ fn cmd_init(a: &InitArgs) -> Result<()> {
 
 // ── F2/F3/F4 run ─────────────────────────────────────────────────────────────
 
-fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+fn runtime_environment(
+    env: &EnvArgs,
+    password_stdin: bool,
+) -> Result<Vec<(String, zeroize::Zeroizing<String>)>> {
     let paths = load::planned_paths(&env.files, env.cascade.as_deref());
     let mut sess = Session::open(password_stdin)?;
     let loaded = load::load_files(
@@ -279,8 +286,8 @@ fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
         env.cascade.is_some(),
         env.r#override,
         &env.variables,
+        env.no_expand,
     )?;
-
     if env.cascade.is_some() && loaded.files.is_empty() {
         eprintln!(
             "{} no cascade candidates found; continuing with the process environment",
@@ -291,22 +298,39 @@ fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
         note!("{} {} not found, skipped", yellow("⚠️"), m.display());
     }
     print_summary(&loaded);
-
-    let mut cmd = std::process::Command::new(&a.cmd[0]);
-    cmd.args(&a.cmd[1..]);
-    for e in &loaded.entries {
-        let in_env = std::env::var_os(&e.name).is_some();
-        if !in_env || env.r#override {
-            cmd.env(&e.name, e.value.as_str());
+    let mut entries: Vec<_> = std::env::vars_os()
+        .filter_map(|(key, value)| {
+            Some((
+                key.into_string().ok()?,
+                zeroize::Zeroizing::new(value.into_string().ok()?),
+            ))
+        })
+        .collect();
+    for entry in loaded.entries {
+        if let Some((_, value)) = entries.iter_mut().find(|(key, _)| *key == entry.name) {
+            *value = entry.value;
         } else {
-            note!(
-                "{} {} is already in the process environment; the file value was not applied (--override flips this)",
-                dim("·"),
-                e.name
-            );
+            entries.push((entry.name, entry.value));
         }
     }
-    cmd.envs(env.variables.iter().map(|(name, value)| (name, value)));
+    if !env.no_expand {
+        expand::expand(&mut entries);
+    }
+    for (key, value) in &env.variables {
+        if let Some((_, existing)) = entries.iter_mut().find(|(name, _)| name == key) {
+            *existing = zeroize::Zeroizing::new(value.clone());
+        } else {
+            entries.push((key.clone(), zeroize::Zeroizing::new(value.clone())));
+        }
+    }
+    Ok(entries)
+}
+
+fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+    let entries = runtime_environment(env, password_stdin)?;
+    let mut cmd = std::process::Command::new(&a.cmd[0]);
+    cmd.args(&a.cmd[1..]);
+    cmd.envs(entries.iter().map(|(key, value)| (key, value.as_str())));
     exec(cmd, &a.cmd[0].to_string_lossy())
 }
 
@@ -415,37 +439,14 @@ fn cmd_set(a: &SetArgs, password_stdin: bool) -> Result<()> {
 }
 
 fn cmd_get(a: &GetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
-    let paths = load::planned_paths(&env.files, env.cascade.as_deref());
-    let mut sess = Session::open(password_stdin)?;
-    let loaded = load::load_files(
-        &mut sess,
-        &paths,
-        env.cascade.is_some(),
-        env.r#override,
-        &env.variables,
-    )?;
-    if env.cascade.is_some() && loaded.files.is_empty() {
-        eprintln!(
-            "{} no cascade candidates found; continuing with the process environment",
-            yellow("warn:")
-        );
-    }
-    for m in &loaded.missing {
-        note!("{} {} not found, skipped", yellow("⚠️"), m.display());
-    }
-    if let Some((_, value)) = env.variables.iter().rev().find(|(name, _)| *name == a.name) {
-        println!("{value}");
-        return Ok(());
-    }
-    let file_value = loaded.entries.iter().find(|e| e.name == a.name);
-    let process_value = std::env::var_os(&a.name);
-    if let Some(value) = process_value.filter(|_| !env.r#override || file_value.is_none()) {
+    let entries = runtime_environment(env, password_stdin)?;
+    if let Some((_, value)) = entries.iter().find(|(key, _)| *key == a.name) {
+        println!("{}", value.as_str());
+    } else if let Some(value) = std::env::var_os(&a.name) {
         use std::io::Write;
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(value.as_encoded_bytes())?;
         stdout.write_all(b"\n")?;
-    } else if let Some(entry) = file_value {
-        println!("{}", entry.value.as_str());
     } else {
         bail!("no variable named {} in the final environment", a.name);
     }
