@@ -100,7 +100,7 @@ pub fn decrypt(key: &Key, name: &str, value: &str) -> Result<Zeroizing<String>> 
     let blob = B64URL
         .decode(body.trim())
         .with_context(|| format!("{name}: failed to base64-decode the ciphertext"))?;
-    if blob.len() <= NONCE_LEN + 16 {
+    if blob.len() < NONCE_LEN + 16 {
         bail!("{name}: invalid ciphertext length");
     }
     let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);

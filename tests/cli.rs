@@ -717,3 +717,502 @@ fn native_child_runs_and_exit_codes_pass_through_on_every_platform() {
     ]);
     assert_eq!(output.status.code(), Some(2));
 }
+
+fn failure(output: &Output, message: &str) {
+    assert!(
+        !output.status.success(),
+        "unexpected success: {}",
+        text(output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(message), "expected {message:?}: {stderr}");
+}
+
+fn input(mut command: Command, value: &[u8]) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(value).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn bulk_encryption_respects_modes_and_is_idempotent() {
+    let p = Project::new();
+    for (mode, marked, unmarked) in [("whitelist", "ENC", false), ("blacklist", "PLAIN", true)] {
+        let file = p.fixture(mode, &format!("# @localenvx-mode:{mode}\n# keep this comment\n# @{marked}\nMARKED=marked-value\nOTHER=other-value\n"));
+        success(&p.run(&["-e", path(&file), "encrypt"]));
+        let stored = std::fs::read_to_string(&file).unwrap();
+        assert!(stored.contains("# keep this comment"));
+        assert_eq!(stored.contains("OTHER=encrypted:v1:"), unmarked);
+        assert_eq!(stored.contains("MARKED=encrypted:v1:"), !unmarked);
+        for (key, value) in [("MARKED", "marked-value"), ("OTHER", "other-value")] {
+            let output = p.run(&["-e", path(&file), "get", key]);
+            success(&output);
+            assert_eq!(text(&output), format!("{value}\n"));
+        }
+        success(&p.run(&["-e", path(&file), "encrypt"]));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), stored);
+    }
+}
+
+#[test]
+fn bulk_globs_round_trip_and_decrypt_requires_explicit_selection() {
+    let p = Project::new();
+    let file = p.fixture("", "# @localenvx-mode:whitelist\nAPI_TOKEN=secret-one\nDB_TOKEN=secret-two\nPUBLIC=visible\nEMPTY=\n");
+    success(&p.run(&["-e", path(&file), "encrypt", "-k", "*_TOKEN", "-k", "EMPTY"]));
+    let encrypted = std::fs::read(&file).unwrap();
+    let stored = String::from_utf8_lossy(&encrypted);
+    assert_eq!(stored.matches("encrypted:v1:").count(), 3);
+    assert!(!stored.contains("secret-one"));
+    assert!(!stored.contains("secret-two"));
+    assert!(stored.contains("PUBLIC=visible"));
+    failure(&p.run(&["-e", path(&file), "decrypt"]), "explicit -k");
+    assert_eq!(std::fs::read(&file).unwrap(), encrypted);
+    success(&p.run(&["-e", path(&file), "decrypt", "-k", "API_*"]));
+    let stored = std::fs::read_to_string(&file).unwrap();
+    assert!(stored.contains("API_TOKEN=secret-one"));
+    assert!(stored.contains("DB_TOKEN=encrypted:v1:"));
+    success(&p.run(&["-e", path(&file), "decrypt", "-k", "*"]));
+    let plain = std::fs::read(&file).unwrap();
+    assert!(!String::from_utf8_lossy(&plain).contains("encrypted:v1:"));
+    success(&p.run(&["-e", path(&file), "encrypt"]));
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        plain,
+        "decrypted keys must remain plaintext by policy"
+    );
+    success(&p.run(&["-e", path(&file), "decrypt", "-k", "MISSING*"]));
+    assert_eq!(std::fs::read(&file).unwrap(), plain);
+    let output = p.run(&["-e", path(&file), "get", "EMPTY"]);
+    success(&output);
+    assert_eq!(text(&output), "\n");
+}
+
+#[test]
+fn failed_decryption_and_rotation_preserve_files_and_config() {
+    let p = Project::new();
+    let first = p.fixture("first", "A=synthetic-secret\n");
+    success(&p.run(&["-e", path(&first), "encrypt"]));
+    let good = std::fs::read(&first).unwrap();
+    let config = std::fs::read(p.0.join("config.toml")).unwrap();
+    let mut command = p.command();
+    command.env("LOCALENVX_PASSWORD", "wrong-password").args([
+        "-e",
+        path(&first),
+        "decrypt",
+        "-k",
+        "*",
+    ]);
+    assert!(!command.output().unwrap().status.success());
+    assert_eq!(std::fs::read(&first).unwrap(), good);
+    let bad = p.fixture("bad", "B=encrypted:v1:invalid\n");
+    let corrupt = std::fs::read(&bad).unwrap();
+    assert!(
+        !p.run(&["-e", path(&first), "-e", path(&bad), "passwd"])
+            .status
+            .success()
+    );
+    assert_eq!(std::fs::read(&first).unwrap(), good);
+    assert_eq!(std::fs::read(&bad).unwrap(), corrupt);
+    assert_eq!(std::fs::read(p.0.join("config.toml")).unwrap(), config);
+    // Even a successfully decrypted earlier key must not be saved on later failure.
+    let mut mixed = good.clone();
+    mixed.extend_from_slice(b"B=encrypted:v1:invalid\n");
+    std::fs::write(&first, &mixed).unwrap();
+    assert!(
+        !p.run(&["-e", path(&first), "decrypt", "-k", "*"])
+            .status
+            .success()
+    );
+    assert_eq!(std::fs::read(&first).unwrap(), mixed);
+}
+
+#[test]
+fn list_never_decrypts_or_prints_values_and_lists_each_file() {
+    let p = Project::new();
+    let first = p.fixture("first", "# @localenvx-mode:whitelist\nPLAIN=synthetic-private-value\nSECRET=encrypted:v1:synthetic-corrupt-ciphertext\n");
+    let second = p.fixture("second", "OTHER=another-private-value\n");
+    std::fs::remove_file(p.0.join("config.toml")).unwrap();
+    let output = p.run(&["-e", path(&first), "-e", path(&second), "list"]);
+    success(&output);
+    let report = text(&output);
+    for expected in [
+        path(&first),
+        path(&second),
+        "whitelist",
+        "PLAIN",
+        "SECRET",
+        "OTHER",
+        "enc",
+        "plain",
+    ] {
+        assert!(report.contains(expected), "{report}");
+    }
+    for secret in [
+        "synthetic-private",
+        "synthetic-corrupt",
+        "another-private",
+        "encrypted:v1:",
+    ] {
+        assert!(!report.contains(secret), "{report}");
+    }
+    assert!(output.stderr.is_empty());
+    assert!(!p.run(&["-e", "missing", "list"]).status.success());
+}
+
+#[test]
+fn stdin_values_unicode_paths_and_literal_values_round_trip() {
+    let p = Project::new();
+    let file = p.fixture("spaces and 中文", "# preserved\n");
+    let mut command = p.command();
+    command.args(["-e", path(&file), "set", "SECRET", "--stdin", "--enc", "-y"]);
+    success(&input(
+        command,
+        "中文 value with = and # and 'quotes'\r\n".as_bytes(),
+    ));
+    let output = p.run(&["-e", path(&file), "get", "SECRET"]);
+    success(&output);
+    assert_eq!(text(&output), "中文 value with = and # and 'quotes'\n");
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("中文 value")
+    );
+    let mut command = p.command();
+    command.args([
+        "-e",
+        path(&file),
+        "set",
+        "EMPTY",
+        "--stdin",
+        "--plain",
+        "-y",
+    ]);
+    success(&input(command, b""));
+    assert_eq!(text(&p.run(&["-e", path(&file), "get", "EMPTY"])), "\n");
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("# preserved")
+    );
+}
+
+#[test]
+fn invalid_set_arguments_never_modify_files() {
+    let p = Project::new();
+    let file = p.fixture("", "A=original\n");
+    for (args, message) in [
+        (vec!["set", "A"], "missing VALUE"),
+        (
+            vec!["set", "A", "value", "--stdin", "-y"],
+            "mutually exclusive",
+        ),
+        (
+            vec!["set", "A", "value", "--plain", "--enc", "-y"],
+            "cannot be used",
+        ),
+        (vec!["set", "A", "--stdin", "--plain"], "pass -y"),
+        (vec!["rm", "MISSING", "-y"], "no variable named"),
+        (vec!["get", "MISSING"], "no variable named"),
+    ] {
+        let output = p
+            .command()
+            .args(["-e", path(&file)])
+            .args(args)
+            .output()
+            .unwrap();
+        failure(&output, message);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "A=original\n");
+    }
+}
+
+#[test]
+fn password_stdin_overrides_environment_and_config() {
+    let p = Project::new();
+    let file = p.fixture("", "A=secret\n");
+    success(&p.run(&["-e", path(&file), "encrypt"]));
+    let original = std::fs::read(&file).unwrap();
+    let mut command = p.command();
+    command.env("LOCALENVX_PASSWORD", "wrong-password").args([
+        "--password-stdin",
+        "-e",
+        path(&file),
+        "get",
+        "A",
+    ]);
+    let output = input(command, b"synthetic-test-password\r\n");
+    success(&output);
+    assert_eq!(text(&output), "secret\n");
+    for password in [b"wrong-password\n".as_slice(), b"\n".as_slice()] {
+        let mut command = p.command();
+        command.args(["--password-stdin", "-e", path(&file), "get", "A"]);
+        let output = input(command, password);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("synthetic-test-password"));
+    }
+    assert_eq!(std::fs::read(&file).unwrap(), original);
+}
+
+#[test]
+fn bulk_commands_reject_multiple_files_and_missing_files() {
+    let p = Project::new();
+    let first = p.fixture("first", "A=original\n");
+    let second = p.fixture("second", "B=other\n");
+    for command in ["encrypt", "decrypt"] {
+        failure(
+            &p.run(&["-e", path(&first), "-e", path(&second), command, "-k", "*"]),
+            "single -e file",
+        );
+        assert!(
+            !p.run(&["-e", "missing", command, "-k", "*"])
+                .status
+                .success()
+        );
+    }
+    assert_eq!(std::fs::read_to_string(first).unwrap(), "A=original\n");
+    assert_eq!(std::fs::read_to_string(second).unwrap(), "B=other\n");
+}
+
+#[test]
+fn native_child_receives_decrypted_environment_on_every_platform() {
+    let p = Project::new();
+    let file = p.fixture("", "SECRET=child-secret\n");
+    success(&p.run(&["-e", path(&file), "encrypt"]));
+    for entry in [vec!["run", "--"], vec!["--"], vec![]] {
+        let output = p
+            .command()
+            .args(["-e", path(&file)])
+            .args(entry)
+            .args([
+                env!("CARGO_BIN_EXE_localenvx"),
+                "--config-file",
+                path(&p.0.join("config.toml")),
+                "-e",
+                path(&file),
+                "-v",
+                "SECRET=child-override",
+                "get",
+                "SECRET",
+            ])
+            .output()
+            .unwrap();
+        success(&output);
+        assert_eq!(text(&output), "child-override\n");
+        // An empty file ensures the nested CLI can only get SECRET by inheritance.
+        let empty = p.fixture("empty-child", "");
+        let output = p.run(&[
+            "-e",
+            path(&file),
+            "run",
+            "--",
+            env!("CARGO_BIN_EXE_localenvx"),
+            "--config-file",
+            path(&p.0.join("config.toml")),
+            "-e",
+            path(&empty),
+            "get",
+            "SECRET",
+        ]);
+        success(&output);
+        assert_eq!(text(&output), "child-secret\n");
+    }
+}
+
+// Give rpassword a controlling terminal and answer each prompt only after it appears.
+// A deadline prevents a broken prompt from hanging CI indefinitely.
+#[cfg(unix)]
+fn terminal_passwords(mut command: Command, answers: &[(&str, &str)]) -> Output {
+    use std::fs::File;
+    use std::io::{Read, Write};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let mut master = -1;
+    let mut slave = -1;
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        },
+        0
+    );
+    let mut master = unsafe { File::from_raw_fd(master) };
+    let slave = unsafe { File::from_raw_fd(slave) };
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+        let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
+        assert_ne!(flags, -1);
+        assert_ne!(
+            libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK),
+            -1
+        );
+    }
+    let mut child = command
+        .stdin(Stdio::from(slave))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut transcript = String::new();
+    let mut next = 0;
+    loop {
+        let mut buf = [0u8; 1024];
+        if let Ok(n) = master.read(&mut buf) {
+            transcript.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        if next < answers.len() && transcript.contains(answers[next].0) {
+            master
+                .write_all(format!("{}\n", answers[next].1).as_bytes())
+                .unwrap();
+            transcript.clear();
+            next += 1;
+        }
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "password interaction timed out at prompt {next}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        next,
+        answers.len(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+#[cfg(windows)]
+fn terminal_passwords(command: Command, answers: &[(&str, &str)]) -> Output {
+    let argv: Vec<_> = std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|arg| arg.to_str().unwrap())
+        .collect();
+    let env: Vec<_> = command
+        .get_envs()
+        .map(|(key, value)| (key.to_str().unwrap(), value.map(|v| v.to_str().unwrap())))
+        .collect();
+    let spec = serde_json::json!({
+        "argv": argv,
+        "cwd": command.get_current_dir().unwrap().to_str().unwrap(),
+        "env": env,
+        "answers": answers,
+    });
+    Command::new(std::env::var_os("LOCALENVX_TEST_PYTHON").unwrap_or_else(|| "python".into()))
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/windows_terminal.py"
+        ))
+        .arg(spec.to_string())
+        .output()
+        .expect("Windows terminal tests require Python and pywinpty (installed by CI)")
+}
+
+#[test]
+fn password_rotation_reencrypts_multiple_files_and_supports_no_store() {
+    let p = Project::new();
+    let first = p.fixture("first", "A=first-secret\nPUBLIC=visible\n");
+    let second = p.fixture("second", "B=second-secret\n");
+    success(&p.run(&["-e", path(&first), "encrypt", "-k", "A"]));
+    success(&p.run(&["-e", path(&second), "encrypt"]));
+    for no_store in [false, true] {
+        let before = std::fs::read(&first).unwrap();
+        let mut command = p.command();
+        command.args(["-e", path(&first), "-e", path(&second), "passwd"]);
+        if no_store {
+            command.arg("--no-store");
+        }
+        let output = terminal_passwords(
+            command,
+            &[
+                ("new password: ", "rotated-password"),
+                ("repeat password: ", "rotated-password"),
+            ],
+        );
+        success(&output);
+        assert_ne!(std::fs::read(&first).unwrap(), before);
+        let config: toml::Value = std::fs::read_to_string(p.0.join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            config.get("password").and_then(toml::Value::as_str),
+            (!no_store).then_some("rotated-password")
+        );
+        for (file, key, value) in [
+            (&first, "A", "first-secret"),
+            (&second, "B", "second-secret"),
+        ] {
+            let output = p
+                .command()
+                .env("LOCALENVX_PASSWORD", "rotated-password")
+                .args(["-e", path(file), "get", key])
+                .output()
+                .unwrap();
+            success(&output);
+            assert_eq!(text(&output), format!("{value}\n"));
+            let output = p
+                .command()
+                .env("LOCALENVX_PASSWORD", "synthetic-test-password")
+                .args(["-e", path(file), "get", key])
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+        }
+        assert!(
+            std::fs::read_to_string(&first)
+                .unwrap()
+                .contains("PUBLIC=visible")
+        );
+    }
+}
+
+#[test]
+fn mismatched_new_password_leaves_config_and_ciphertext_unchanged() {
+    let p = Project::new();
+    let file = p.fixture("", "A=secret\n");
+    success(&p.run(&["-e", path(&file), "encrypt"]));
+    let original = std::fs::read(&file).unwrap();
+    let config = std::fs::read(p.0.join("config.toml")).unwrap();
+    let mut command = p.command();
+    command.args(["-e", path(&file), "passwd"]);
+    failure(
+        &terminal_passwords(
+            command,
+            &[
+                ("new password: ", "one-password"),
+                ("repeat password: ", "another-password"),
+            ],
+        ),
+        "do not match",
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), original);
+    assert_eq!(std::fs::read(p.0.join("config.toml")).unwrap(), config);
+}
