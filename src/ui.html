@@ -26,7 +26,7 @@
   h1 { font-size:15px; margin:0; letter-spacing:.02em; }
   .path { color:var(--mut); font-family:ui-monospace,monospace; font-size:12px; margin-right:auto; }
   main { padding-block:18px 60px; }
-  select, input, button { font:inherit; color:inherit; background:transparent; border:1px solid var(--line); border-radius:6px; padding:6px 9px; }
+  select, input, textarea, button { font:inherit; color:inherit; background:transparent; border:1px solid var(--line); border-radius:6px; padding:6px 9px; }
   button { cursor:pointer; }
   button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
   svg { display:block; }
@@ -34,6 +34,9 @@
   th { text-align:left; font-weight:500; color:var(--mut); font-size:12px; padding:6px 8px; border-bottom:1px solid var(--line); }
   td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
   td.name { font-family:ui-monospace,monospace; white-space:nowrap; }
+  .value-display { display:grid; min-width:0; flex:1; }
+  .value-display > span { grid-area:1 / 1; white-space:pre-wrap; overflow-wrap:anywhere; min-width:0; }
+  .value-size { visibility:hidden; font-family:ui-monospace,monospace; }
   .val { font-family:ui-monospace,monospace; cursor:pointer; color:var(--mut); word-break:break-all; }
   .val.shown { color:var(--fg); }
   .th-val { display:flex; align-items:center; gap:6px; }
@@ -58,10 +61,18 @@
           letter-spacing:.04em; text-transform:uppercase; padding:3px 9px; border-radius:99px; border:1px solid transparent; }
   .mode.blacklist { color:var(--ok);   background:var(--ok-bg);   border-color:var(--ok); }
   .mode.whitelist { color:var(--warn); background:var(--warn-bg); border-color:var(--warn); }
+  .row-actions { white-space:nowrap; }
+  .editor { width:100%; min-width:0; font-family:ui-monospace,monospace; }
+  textarea.editor { resize:vertical; display:block; }
+  .row-actions form { display:flex; gap:4px; }
+  .file-comment { margin:0 0 12px; color:var(--mut); font:12.5px/1.5 ui-monospace,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .table-tools { display:flex; justify-content:flex-end; }
+  .table-scroll { overflow-x:auto; }
+  table { table-layout:fixed; min-width:720px; }
   .row-actions button { border:none; color:var(--mut); padding:4px 6px; }
+  .row-actions button.primary { color:#fff; }
   #msg { margin-top:12px; color:var(--mut); min-height:1.4em; }
-  form.add { margin-top:20px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  form.add input[name=name] { width:220px; } form.add input[name=value] { flex:1; min-width:240px; }
+
 </style>
 </head>
 <body>
@@ -74,26 +85,18 @@
   </div>
 </header>
 <main class="wrap">
-  <table>
+  <div id="file-comment" class="file-comment" hidden></div>
+  <div class="table-tools"><button id="add" type="button" title="Add variable" aria-label="Add variable">+ Add</button></div>
+  <div class="table-scroll"><table>
+    <colgroup><col style="width:24%"><col><col style="width:170px"><col style="width:135px"></colgroup>
     <thead><tr>
       <th>Variable</th>
       <th><span class="th-val">Value<button class="eye" id="eye" type="button" title="Reveal/hide all" aria-pressed="false"></button></span></th>
       <th>Status</th><th></th>
     </tr></thead>
     <tbody id="rows"></tbody>
-  </table>
-
-  <form class="add" id="add" autocomplete="off">
-    <input name="name" placeholder="NAME" required pattern="[A-Za-z_][A-Za-z0-9_]*">
-    <input name="value" placeholder="value" required>
-    <select name="enc">
-      <option value="auto">Follow file mode</option>
-      <option value="enc">Force encrypted</option>
-      <option value="plain">Force plaintext</option>
-    </select>
-    <button class="primary" type="submit">Save</button>
-  </form>
-  <div id="msg"></div>
+  </table></div>
+  <div id="msg" role="status" aria-live="polite"></div>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -157,7 +160,20 @@ async function loadFile() {
     : 'Plaintext by default: only variables marked # @ENC are encrypted';
 
   const rows = $('#rows'); rows.innerHTML = '';
-  j.lines.forEach(l => {
+  // The preamble includes the file mode declaration; per-variable directives stay with rows.
+  const modeIndex = j.lines.findIndex(l => l.kind === 'comment' && /@localenvx-mode:/.test(l.text));
+  let preambleEnd = 0;
+  const limit = modeIndex < 0 ? j.lines.length : modeIndex + 1;
+  while (preambleEnd < limit) {
+    const line = j.lines[preambleEnd];
+    if (line.kind === 'var' || (line.kind === 'comment' && /@ENC\b|@PLAIN\b/.test(line.text))) break;
+    preambleEnd++;
+  }
+  const preamble = j.lines.slice(0, preambleEnd).map(l => l.kind === 'comment' ? l.text : '').join('\n').trim();
+  const fileComment = $('#file-comment');
+  fileComment.textContent = preamble;
+  fileComment.hidden = !preamble;
+  j.lines.slice(preambleEnd).forEach(l => {
     rows.append(l.kind === 'var' ? row(path, l) : l.kind === 'comment' ? commentRow(l.text) : blankRow());
   });
   applyReveal();
@@ -217,7 +233,11 @@ function row(path, v) {
     }
   };
 
-  cell.append(span, copy);
+  const display = document.createElement('div'); display.className = 'value-display';
+  const size = document.createElement('span'); size.className = 'value-size';
+  size.textContent = v.value || DOTS; size.setAttribute('aria-hidden', 'true');
+  display.append(size, span);
+  cell.append(display, copy);
   val.append(cell);
 
   const st = document.createElement('td');
@@ -228,11 +248,7 @@ function row(path, v) {
 
   const act = document.createElement('td'); act.className = 'row-actions';
   const edit = document.createElement('button'); edit.textContent = 'Edit';
-  edit.onclick = async () => {
-    const nv = prompt('New value — ' + v.name, v.value);
-    if (nv === null) return;
-    await save(path, v.name, nv, v.encrypted ? 'enc' : 'plain');
-  };
+  edit.onclick = () => { tr.replaceWith(editorRow(path, v)); };
   const del = document.createElement('button'); del.textContent = 'Delete';
   del.onclick = async () => {
     if (!confirm('Delete ' + v.name + '?')) return;
@@ -245,23 +261,65 @@ function row(path, v) {
   return tr;
 }
 
-async function save(path, name, value, enc) {
-  try {
-    await api('/api/set', { method: 'POST', body: JSON.stringify({ path, name, value, enc }) });
-    await loadFile();
-    msg('Saved ' + name);
-  } catch (e) { msg('Failed: ' + e.message); }
+let editorId = 0;
+function editorRow(path, v = null) {
+  const tr = document.createElement('tr');
+  const id = 'edit-' + ++editorId;
+  const nameCell = document.createElement('td');
+  const name = document.createElement('input');
+  name.className = 'editor'; name.placeholder = 'NAME'; name.required = true;
+  name.pattern = '[A-Za-z_][A-Za-z0-9_]*'; name.value = v ? v.name : '';
+  name.readOnly = !!v; name.setAttribute('aria-label', 'Variable name');
+  const valueCell = document.createElement('td');
+  const value = document.createElement('textarea');
+  value.className = 'editor'; value.rows = 2; value.placeholder = 'value';
+  value.value = v ? v.value : ''; value.setAttribute('aria-label', 'Variable value');
+  const statusCell = document.createElement('td');
+  const enc = document.createElement('select'); enc.className = 'editor';
+  enc.setAttribute('aria-label', 'Encryption mode');
+  [['auto', 'Follow file mode'], ['enc', 'Encrypted'], ['plain', 'Plaintext']].forEach(([key, label]) => {
+    const option = document.createElement('option'); option.value = key; option.textContent = label; enc.append(option);
+  });
+  enc.value = v ? (v.encrypted ? 'enc' : 'plain') : 'auto';
+  [name, value, enc].forEach(el => el.setAttribute('form', id));
+  const actions = document.createElement('td'); actions.className = 'row-actions';
+  const form = document.createElement('form'); form.id = id; form.autocomplete = 'off';
+  const submit = document.createElement('button'); submit.type = 'submit';
+  submit.className = 'primary'; submit.textContent = 'Save';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
+  cancel.onclick = () => { if (v) tr.replaceWith(row(path, v)); else tr.remove(); };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (!v && [...$('#rows').querySelectorAll('td.name')].some(el => el.textContent === name.value)) {
+      msg('Variable already exists: ' + name.value); name.focus(); return;
+    }
+    submit.disabled = cancel.disabled = true;
+    try {
+      await api('/api/set', { method: 'POST', body: JSON.stringify({ path, name: name.value, value: value.value, enc: enc.value }) });
+      const saved = { name: name.value, value: value.value, encrypted: enc.value === 'enc' || (enc.value === 'auto' && $('#mode').classList.contains('blacklist')) };
+      tr.replaceWith(row(path, saved)); applyReveal(); msg('Saved ' + saved.name);
+    } catch (e) { msg('Failed: ' + e.message); }
+    finally { submit.disabled = cancel.disabled = false; }
+  };
+  form.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); if (!cancel.disabled) cancel.click(); } };
+  // Controls belong to the row form even though they occupy separate table cells.
+  [name, value, enc].forEach(el => el.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !cancel.disabled) { e.preventDefault(); cancel.click(); }
+  }));
+  nameCell.append(name); valueCell.append(value); statusCell.append(enc);
+  form.append(submit, cancel); actions.append(form); tr.append(nameCell, valueCell, statusCell, actions);
+  requestAnimationFrame(() => (v ? value : name).focus());
+  return tr;
 }
 
 $('#eye').onclick = () => { revealAll = !revealAll; paintEye(); applyReveal(); };
 paintEye();
 
-$('#file').onchange = loadFile;
-$('#add').onsubmit = async e => {
-  e.preventDefault();
-  const f = e.target;
-  await save($('#file').value, f.name.value, f.value.value, f.enc.value);
-  f.value.value = '';
+$('#file').onchange = () => loadFile().catch(e => msg('Load failed: ' + e.message));
+$('#add').onclick = () => {
+  const editor = editorRow($('#file').value || '.env');
+  $('#rows').append(editor); editor.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  msg('');
 };
 loadFiles().catch(e => msg('Load failed: ' + e.message));
 </script>
