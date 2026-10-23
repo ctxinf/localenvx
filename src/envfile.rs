@@ -87,6 +87,7 @@ pub struct EnvFile {
     pub mode: Mode,
     lines: Vec<Line>,
     ends_with_newline: bool,
+    original_source: Option<String>,
 }
 
 impl EnvFile {
@@ -102,52 +103,82 @@ impl EnvFile {
             mode: Mode::DEFAULT,
             lines: vec![],
             ends_with_newline: true,
+            original_source: None,
         }
     }
 
     pub fn from_str_at(text: &str, path: &Path) -> Result<Self> {
+        let original_source = Some(text.to_string());
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = normalized.as_str();
         let ends_with_newline = text.is_empty() || text.ends_with('\n');
-        let body = text.strip_suffix('\n').unwrap_or(text);
-        let mut lines: Vec<Line> = Vec::new();
-        if !(text.is_empty()) {
-            let raw_lines: Vec<&str> = body.split('\n').collect();
-            let mut i = 0;
-            while i < raw_lines.len() {
-                let mut raw = raw_lines[i].to_string();
-                if let Some((_, _, _, value)) = var_header(&raw) {
-                    if let Some('"' | '\'' | '`') = value.trim_start().chars().next() {
-                        let mut candidate = raw.clone();
-                        let mut end = i;
-                        loop {
-                            if let Some(v) = parse_var_line(&candidate) {
-                                if v.quote != Quote::None {
-                                    raw = candidate;
-                                    i = end;
-                                    break;
-                                }
-                            }
-                            end += 1;
-                            if end == raw_lines.len() {
-                                break;
-                            }
-                            candidate.push('\n');
-                            candidate.push_str(raw_lines[end]);
-                        }
-                    }
+        let mut lines = Vec::new();
+        let mut cursor = 0;
+        for captures in dotenv_pattern().captures_iter(text) {
+            let name = captures.get(1).unwrap();
+            let value = captures.get(3);
+            let start = text[..name.start()]
+                .rfind('\n')
+                .map_or(0, |i| i + 1)
+                .max(cursor);
+            let value_end = value.map_or_else(|| captures.get(2).unwrap().end(), |v| v.end());
+            let end = text[value_end..]
+                .find('\n')
+                .map_or(text.len(), |i| value_end + i);
+            append_raw(&mut lines, &text[cursor..start]);
+            let original = &text[start..end];
+            let decoded = value.map_or("", |v| v.as_str()).trim();
+            let (quote, value) = match decoded.as_bytes().first().copied() {
+                Some(q @ (b'\'' | b'"' | b'`'))
+                    if decoded.len() >= 2 && decoded.as_bytes().last() == Some(&q) =>
+                {
+                    let inner = &decoded[1..decoded.len() - 1];
+                    let quote = match q {
+                        b'\'' => Quote::Single,
+                        b'"' => Quote::Double,
+                        _ => Quote::Backtick,
+                    };
+                    (
+                        quote,
+                        if q == b'"' {
+                            unescape_double(inner)
+                        } else {
+                            inner.to_string()
+                        },
+                    )
                 }
-                lines.push(match parse_var_line(&raw) {
-                    Some(v) => Line::Var(v),
-                    None => Line::Raw(raw),
-                });
-                i += 1;
-            }
+                _ => (
+                    Quote::None,
+                    if decoded.starts_with('"') {
+                        unescape_double(decoded)
+                    } else {
+                        decoded.to_string()
+                    },
+                ),
+            };
+            let prefix = &text[start..name.start()];
+            let indent_len = prefix.len() - prefix.trim_start().len();
+            let trailing_start = captures.get(3).map_or(value_end, |v| v.end());
+            lines.push(Line::Var(Var {
+                name: name.as_str().to_string(),
+                value,
+                quote,
+                export: prefix[indent_len..].starts_with("export"),
+                original: Some(original.to_string()),
+                indent: prefix[..indent_len].to_string(),
+                space_after_eq: String::new(),
+                trailing: text[trailing_start..end].to_string(),
+            }));
+            cursor = end + usize::from(end < text.len());
         }
+        append_raw(&mut lines, &text[cursor..]);
         let mode = detect_mode(&lines, path)?;
         let f = Self {
             path: path.to_path_buf(),
             mode,
             lines,
             ends_with_newline,
+            original_source,
         };
         f.validate_directives()?;
         Ok(f)
@@ -254,6 +285,7 @@ impl EnvFile {
     }
 
     pub fn set_value(&mut self, name: &str, value: &str) -> Result<()> {
+        self.original_source = None;
         let idx = self
             .index_of(name)
             .with_context(|| format!("{}: no variable named {name}", self.path.display()))?;
@@ -269,6 +301,7 @@ impl EnvFile {
 
     /// Insert or update a variable; `want_enc` of None means follow the file default (no directive written).
     pub fn upsert(&mut self, name: &str, value: &str, want_enc: Option<bool>) -> Result<()> {
+        self.original_source = None;
         if name.is_empty()
             || !name
                 .chars()
@@ -318,6 +351,7 @@ impl EnvFile {
     /// Make `name`'s effective encryption intent equal `want`: drop the redundant directive
     /// when it matches the file default, otherwise write or fix the directive comment.
     pub fn apply_directive(&mut self, name: &str, want: bool) -> Result<()> {
+        self.original_source = None;
         let idx = self
             .index_of(name)
             .with_context(|| format!("{}: no variable named {name}", self.path.display()))?;
@@ -370,6 +404,7 @@ impl EnvFile {
     }
 
     fn remove_at(&mut self, idx: usize) -> Result<()> {
+        self.original_source = None;
         let directive_line = self.scan_directive(idx)?.and_then(|(d, i)| {
             let Line::Raw(raw) = &self.lines[i] else {
                 return None;
@@ -385,6 +420,9 @@ impl EnvFile {
     }
 
     pub fn render(&self) -> String {
+        if let Some(source) = &self.original_source {
+            return source.clone();
+        }
         let mut out = String::new();
         for (i, line) in self.lines.iter().enumerate() {
             if i > 0 {
@@ -548,89 +586,19 @@ fn detect_mode(lines: &[Line], path: &Path) -> Result<Mode> {
     Ok(mode.unwrap_or(Mode::DEFAULT))
 }
 
-/// Return the formatting prefix, key, export flag and raw value.
-fn var_header(raw: &str) -> Option<(&str, &str, bool, &str)> {
-    let rest = raw.trim_start_matches([' ', '\t', '\u{feff}']);
-    let indent = &raw[..raw.len() - rest.len()];
-    let (rest, export) = if rest.starts_with("export") && rest[6..].starts_with(char::is_whitespace)
-    {
-        (rest[6..].trim_start(), true)
-    } else {
-        (rest, false)
-    };
-    let key_end = rest
-        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
-        .unwrap_or(rest.len());
-    if key_end == 0 {
-        return None;
-    }
-    let name = &rest[..key_end];
-    let separator = rest[key_end..].trim_start_matches([' ', '\t']);
-    let value = if let Some(value) = separator.strip_prefix('=') {
-        value
-    } else if rest[key_end..].starts_with(':')
-        && rest[key_end + 1..].starts_with(char::is_whitespace)
-    {
-        &rest[key_end + 1..]
-    } else {
-        return None;
-    };
-    Some((indent, name, export, value))
+fn dotenv_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| regex::Regex::new(
+        r#"(?m)^[\s\u{feff}]*(?:export[\s\u{feff}]+)?([A-Za-z0-9_.-]+)([\s\u{feff}]*=[\s\u{feff}]*?|:[\s\u{feff}]+?)([\s\u{feff}]*'(?:\\'|[^'])*'|[\s\u{feff}]*"(?:\\"|[^"])*"|[\s\u{feff}]*`(?:\\`|[^`])*`|[^#\r\n]+)?[\s\u{feff}]*(?:#.*)?$"#
+    ).expect("valid dotenv 17.1.0 assignment pattern"))
 }
 
-fn parse_var_line(raw: &str) -> Option<Var> {
-    let (indent, name, export, after) = var_header(raw)?;
-    let body = after.trim_start_matches([' ', '\t']);
-    let space_after_eq = after[..after.len() - body.len()].to_string();
-    let mut quoted = None;
-    if let Some(q @ ('"' | '\'' | '`')) = body.chars().next() {
-        for (i, c) in body.char_indices().skip(1) {
-            if c != q {
-                continue;
-            }
-            let tail = &body[i + 1..];
-            if tail.trim().is_empty() || tail.trim_start().starts_with('#') {
-                quoted = Some((q, i));
-                break;
-            }
-            if !body[..i].ends_with('\\') {
-                break;
-            }
-        }
+fn append_raw(lines: &mut Vec<Line>, raw: &str) {
+    if raw.is_empty() {
+        return;
     }
-    let (quote, value, trailing) = if let Some((q, end)) = quoted {
-        let inner = body[1..end].replace("\r\n", "\n").replace('\r', "\n");
-        let value = if q == '"' {
-            unescape_double(&inner)
-        } else {
-            inner
-        };
-        let quote = match q {
-            '"' => Quote::Double,
-            '\'' => Quote::Single,
-            _ => Quote::Backtick,
-        };
-        (quote, value, body[end + 1..].to_string())
-    } else {
-        let end = body.find(['#', '\r', '\n']).unwrap_or(body.len());
-        let value = body[..end].trim_end();
-        let value = if body.starts_with('"') {
-            unescape_double(value)
-        } else {
-            value.to_string()
-        };
-        (Quote::None, value, body[end..].to_string())
-    };
-    Some(Var {
-        name: name.to_string(),
-        value,
-        quote,
-        export,
-        original: Some(raw.to_string()),
-        indent: indent.to_string(),
-        space_after_eq,
-        trailing,
-    })
+    let raw = raw.strip_suffix('\n').unwrap_or(raw);
+    lines.extend(raw.split('\n').map(|line| Line::Raw(line.to_string())));
 }
 
 #[cfg(test)]
@@ -639,6 +607,26 @@ mod tests {
 
     fn parse(s: &str) -> EnvFile {
         EnvFile::from_str_at(s, Path::new(".env")).unwrap()
+    }
+
+    #[test]
+    fn matches_pinned_dotenv_parser_oracle() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/parse-v17.json")).unwrap();
+        for case in cases.as_array().unwrap() {
+            let input = case["input"].as_str().unwrap();
+            let file = parse(input);
+            assert_eq!(file.render(), input);
+            let actual: serde_json::Map<String, serde_json::Value> = file
+                .vars()
+                .map(|v| (v.name.clone(), v.value.clone().into()))
+                .collect();
+            assert_eq!(
+                serde_json::Value::Object(actual),
+                case["expected"],
+                "input: {input:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,163 @@
+[
+  {
+    "input": "A=1\nB=two\n",
+    "expected": {
+      "A": "1",
+      "B": "two"
+    }
+  },
+  {
+    "input": "export FOO = bar   # inline\n",
+    "expected": {
+      "FOO": "bar"
+    }
+  },
+  {
+    "input": "A=abc#comment\n",
+    "expected": {
+      "A": "abc"
+    }
+  },
+  {
+    "input": "1.A-B: hello\n",
+    "expected": {
+      "1.A-B": "hello"
+    }
+  },
+  {
+    "input": "A=`multi\nline`\nB=\"more\nlines\"\n",
+    "expected": {
+      "A": "multi\nline",
+      "B": "more\nlines"
+    }
+  },
+  {
+    "input": "A=\"a\\tb\\q\\n\\r\"\n",
+    "expected": {
+      "A": "a\\tb\\q\n\r"
+    }
+  },
+  {
+    "input": "A='raw\\n'\n",
+    "expected": {
+      "A": "raw\\n"
+    }
+  },
+  {
+    "input": "A=\"a\\\"b\"\n",
+    "expected": {
+      "A": "a\\\"b"
+    }
+  },
+  {
+    "input": "A='a\\'b'\n",
+    "expected": {
+      "A": "a\\'b"
+    }
+  },
+  {
+    "input": "A=\"unclosed\nB=next\n",
+    "expected": {
+      "A": "\"unclosed",
+      "B": "next"
+    }
+  },
+  {
+    "input": "A=\"x\" tail\n",
+    "expected": {
+      "A": "\"x\" tail"
+    }
+  },
+  {
+    "input": "A=\nB=two\n",
+    "expected": {
+      "A": "",
+      "B": "two"
+    }
+  },
+  {
+    "input": "A=\n\"multi\"\nB=two\n",
+    "expected": {
+      "A": "multi",
+      "B": "two"
+    }
+  },
+  {
+    "input": "A:\nhello\nB=x\n",
+    "expected": {
+      "A": "hello",
+      "B": "x"
+    }
+  },
+  {
+    "input": "A=one\rB=two\r",
+    "expected": {
+      "A": "one",
+      "B": "two"
+    }
+  },
+  {
+    "input": "A=one\r\nB=\"two\r\nlines\"\r\n",
+    "expected": {
+      "A": "one",
+      "B": "two\nlines"
+    }
+  },
+  {
+    "input": "# before\n\n A = x # comment\n\n# after\n",
+    "expected": {
+      "A": "x"
+    }
+  },
+  {
+    "input": "A=old\nA=new\n",
+    "expected": {
+      "A": "new"
+    }
+  },
+  {
+    "input": "A=\"\"\nB=''\nC=``\n",
+    "expected": {
+      "A": "",
+      "B": "",
+      "C": ""
+    }
+  },
+  {
+    "input": "export\tA = value\n",
+    "expected": {
+      "A": "value"
+    }
+  },
+  {
+    "input": "A=   #comment\nB=   \n",
+    "expected": {
+      "A": "",
+      "B": ""
+    }
+  },
+  {
+    "input": "﻿A=1\n",
+    "expected": {
+      "A": "1"
+    }
+  },
+  {
+    "input": "A=\"x\"#inline\n",
+    "expected": {
+      "A": "x"
+    }
+  },
+  {
+    "input": "A=hello\t  #c\n",
+    "expected": {
+      "A": "hello"
+    }
+  },
+  {
+    "input": "A=\n\n\"line\nvalue\"\n",
+    "expected": {
+      "A": "line\nvalue"
+    }
+  }
+]
