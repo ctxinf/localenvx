@@ -1,16 +1,21 @@
 //! Non-decrypting startup overview. Never display credential or variable values.
 use std::fmt::Write;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use crate::{config, envfile::EnvFile, load};
 
 pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
-    let mut out = format!("localenvx v{}\nStatus:\n", crate::VERSION);
+    let mut out = format!(
+        "{}\n{}\n",
+        style("1;36", &format!("🔐 localenvx v{}", crate::VERSION)),
+        style("1;36", "📊 Status:")
+    );
     if let Ok(dir) = config::config_dir() {
         let path = dir.join("config.toml");
         let _ = writeln!(
             out,
-            "  User config: {} ({})",
+            "  👤 User config: {} ({})",
             path.display(),
             presence(&path)
         );
@@ -18,27 +23,35 @@ pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
     match config::config_path() {
         Ok(path) => {
             let state = match path.try_exists() {
-                Ok(false) => "not generated; run localenvx manage init",
+                Ok(false) => style("33", "⚠️ not generated; run localenvx manage init"),
                 Ok(true) => match config::load() {
-                    Ok(_) => "initialized",
-                    Err(_) => "unusable (invalid configuration or permissions)",
+                    Ok(_) => style("32", "✅ initialized"),
+                    Err(_) => style("31", "❌ unusable (invalid configuration or permissions)"),
                 },
-                Err(_) => "unavailable",
+                Err(_) => style("33", "⚠️ unavailable"),
             };
-            let _ = writeln!(out, "  Active config: {} ({state})", path.display());
+            let _ = writeln!(out, "  🔑 Active config: {} ({state})", path.display());
         }
         Err(_) => {
-            out.push_str("  Active config: unavailable; check HOME or LOCALENVX_CONFIG_DIR\n")
+            let _ = writeln!(
+                out,
+                "  🔑 Active config: {}",
+                style("33", "⚠️ unavailable; check HOME or LOCALENVX_CONFIG_DIR")
+            );
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
-        let _ = writeln!(out, "  Directory: {}", cwd.display());
+        let _ = writeln!(
+            out,
+            "  📂 Directory: {}",
+            style("36", &cwd.display().to_string())
+        );
         for dir in cwd.ancestors() {
             let path = dir.join(".localenvx/config.toml");
             if dir == cwd || path.exists() {
                 let _ = writeln!(
                     out,
-                    "  Project config: {} ({})",
+                    "  📦 Project config: {} ({})",
                     path.display(),
                     presence(&path)
                 );
@@ -65,14 +78,31 @@ pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
                     }
                 }
             }
-            Err(_) => out.push_str("  Environment file discovery: unavailable\n"),
+            Err(_) => {
+                let _ = writeln!(
+                    out,
+                    "  {}",
+                    style("33", "⚠️ Environment file discovery: unavailable")
+                );
+            }
         }
     }
-    out.push_str("  Environment files (values hidden; no decryption):\n");
+    let _ = writeln!(
+        out,
+        "\n{}",
+        style(
+            "1;36",
+            "📄 Environment files (values hidden; no decryption):"
+        )
+    );
     for path in paths {
         match path.try_exists() {
             Ok(false) => {
-                let _ = writeln!(out, "    {}: not found", path.display());
+                let _ = writeln!(
+                    out,
+                    "    {}",
+                    style("33", &format!("⚠️ {}: not found", path.display()))
+                );
             }
             Ok(true) => match EnvFile::load(&path) {
                 Ok(file) => {
@@ -85,31 +115,80 @@ pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
                     let encrypted = vars.iter().filter(|var| var.is_encrypted()).count();
                     let _ = writeln!(
                         out,
-                        "    {}: {} variables, {} encrypted, {} plaintext [{}]",
+                        "    📄 {}: {} [{}]",
                         path.display(),
-                        vars.len(),
-                        encrypted,
-                        vars.len() - encrypted,
-                        file.mode.as_str()
+                        style(
+                            if encrypted > 0 { "32" } else { "2" },
+                            &format!(
+                                "{} variables, {} encrypted, {} plaintext",
+                                vars.len(),
+                                encrypted,
+                                vars.len() - encrypted
+                            )
+                        ),
+                        style("2", file.mode.as_str())
                     );
                 }
                 Err(_) => {
-                    let _ = writeln!(out, "    {}: unreadable or invalid", path.display());
+                    let _ = writeln!(
+                        out,
+                        "    {}",
+                        style(
+                            "31",
+                            &format!("❌ {}: unreadable or invalid", path.display())
+                        )
+                    );
                 }
             },
             Err(_) => {
-                let _ = writeln!(out, "    {}: unavailable", path.display());
+                let _ = writeln!(
+                    out,
+                    "    {}",
+                    style("33", &format!("⚠️ {}: unavailable", path.display()))
+                );
             }
         }
     }
-    out.push_str("\nSuggestions:\n  localenvx --help                 Show commands and options\n  localenvx manage init                   Create user credentials\n  localenvx manage init --config-file .localenvx/config.toml         Create project credentials\n  localenvx run -- <command>       Run with environment variables\n  localenvx manage ls                   List variable names and encryption status\n");
+    let _ = writeln!(out, "\n{}", style("1;36", "💡 Suggestions:"));
+    for (command, description) in [
+        ("localenvx --help", "Show commands and options"),
+        ("localenvx manage init", "Create user credentials"),
+        (
+            "localenvx manage init --config-file .localenvx/config.toml",
+            "Create project credentials",
+        ),
+        (
+            "localenvx run -- <command>",
+            "Run with environment variables",
+        ),
+        (
+            "localenvx manage ls",
+            "List variable names and encryption status",
+        ),
+    ] {
+        let _ = writeln!(
+            out,
+            "  → {}\n    {}",
+            style("36", command),
+            style("2", description)
+        );
+    }
     out
 }
 
-fn presence(path: &std::path::Path) -> &'static str {
+fn presence(path: &std::path::Path) -> String {
     match path.try_exists() {
-        Ok(true) => "generated",
-        Ok(false) => "not generated",
-        Err(_) => "unavailable",
+        Ok(true) => style("32", "✅ generated"),
+        Ok(false) => style("2", "○ not generated"),
+        Err(_) => style("33", "⚠️ unavailable"),
+    }
+}
+
+// Status is written to stdout; redirected output stays free of ANSI escapes.
+fn style(code: &str, text: &str) -> String {
+    if std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_owned()
     }
 }
