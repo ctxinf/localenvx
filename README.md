@@ -13,10 +13,10 @@ scripts/install-local.sh           # build and install into ~/.local/bin (BIN_DI
 
 ```bash
 localenvx init                                   # generate a salt, set the password (stored in the config by default)
-localenvx set OPENAI_API_KEY "sk-..." --enc      # write encrypted into .env
-localenvx set PORT 3000                          # plaintext
+localenvx set OPENAI_API_KEY "sk-..." --enc -y      # write encrypted into .env
+localenvx set PORT 3000 --plain -y                # plaintext
 localenvx list                                   # key names and encryption status only
-localenvx run .env.base .env.local -- npm dev    # decrypt, then execve the child process
+localenvx run -e .env.local -e .env.base -- npm dev    # decrypt, then execve the child process
 localenvx ui                                     # http://127.0.0.1:27500/
 ```
 
@@ -50,17 +50,61 @@ DATABASE_URL=encrypted:v1:BFc4vRxLq8mN2pQ...
 | Command | Description |
 |---|---|
 | `init [--no-store] [--force]` | Generate a salt, set the password |
-| `run [FILES...] [--override] -- CMD` | Layered load (precedence increasing left→right), then `execve`; the real environment wins by default |
-| `set NAME [VALUE] [--enc\|--plain] [--stdin] [-f FILE]` | Write a variable |
-| `get NAME [-f FILE]` | Decrypt to stdout |
-| `list [FILES...]` &nbsp;(alias `ls`) | List key names and encryption status only |
-| `rm NAME [-f FILE]` | Remove a variable (along with a directive-only comment line) |
-| `encrypt [-k GLOB]... [-f FILE]` &nbsp;(alias `enc`) | Bulk-encrypt plaintext; defaults to "every variable this file's mode says should be encrypted" |
-| `decrypt -k GLOB... [-f FILE]` &nbsp;(alias `dec`) | Decrypt to plaintext (lands on disk — use with care) |
-| `passwd [FILES...] [--no-store]` | Change the password and re-encrypt the given files |
+| `[OPTIONS] [--] CMD [ARGS...]` | Direct run; arguments after CMD pass through untouched |
+| `run [OPTIONS] [--] CMD [ARGS...]` | Explicit run, sharing the direct entry's resolution and execution |
+| `set NAME [VALUE] [--enc\|--plain] [--stdin] [-e FILE]... [-y]` | Write to every selected file after confirmation |
+| `get NAME [OPTIONS]` | Print the final environment value, using the same resolution as run; missing names are errors |
+| `list [-e FILE]...` &nbsp;(alias `ls`) | List key names and encryption status only |
+| `rm NAME [-e FILE]... [-y]` | Remove every occurrence from the selected files after confirmation |
+| `encrypt [-k GLOB]... [-e FILE]` &nbsp;(alias `enc`) | Bulk-encrypt one file according to its mode |
+| `decrypt -k GLOB... [-e FILE]` &nbsp;(alias `dec`) | Decrypt one file to plaintext |
+| `passwd [-e FILE]... [--no-store]` | Change the password and re-encrypt the selected files |
 | `ui [--port N] [--strict-port]` | Local web UI |
 
-Global flags: `--password-stdin` (read the password from stdin), `--quiet` / `LOCALENVX_QUIET=1` (silence the stderr summary).
+All environment-file selectors use `-e`; omitted selectors use `.env`, except `passwd`, where omission changes only the credential config. `--config-file PATH` selects the credential config for every command, including `init` and `ui`, ahead of the existing default config location. Run and get still require initialization, including for plaintext input. Debug does not.
+
+Run/get options:
+
+- Repeat `-e FILE` to select files. Default precedence is **process environment > first file > later files**. With `-o` / `--override`, it is **last file > earlier files > process environment**. Within each file the last duplicate wins.
+- Repeat `-v NAME=value` to inject temporary values after expansion. They have highest priority, repeated names use the last value, empty values are rejected, and values stay literal. `-v` has no effect on persistent edits.
+- `-c [ENVIRONMENT]` selects `<base>.<environment>.local`, `<base>.local`, `<base>.<environment>`, then `<base>`, in that priority order for each `-e` base. Bare `-c` selects `<base>.local`, then `<base>`. Use `-c -- COMMAND` to disambiguate a bare cascade flag from its optional environment argument. Cascade and override conflict.
+- Expansion is enabled over the merged environment, including decrypted values and inherited variables; `--no-expand` leaves references literal. Temporary `-v` values are applied afterward.
+- `--debug` prints the candidate paths and temporary variable object, including their values, then exits without reading files, loading credentials, or executing a command.
+- Run/get are quiet by default. `--quiet=false` / `-q=false` enables a summary on stderr; `--quiet` / `-q` silences it. Explicit flags take precedence over `LOCALENVX_QUIET=1|true|0|false`. Missing cascade candidates all together still produce a warning.
+
+A missing default or explicitly selected file is an error. Missing cascade candidates are skipped; when all candidates are missing, a warning is printed and execution continues using the process environment plus `-v`. Other read errors remain errors.
+
+Only winning ciphertext is decrypted. Values needed by expansion count as effective: if `REF=$SECRET` and `-v SECRET=temporary` is supplied, REF expands from SECRET's loaded value before the temporary replacement. Completely unused ciphertext shadowed by files, the process environment, or `-v` does not need a key.
+
+Built-in command names take precedence: `localenvx get NAME` invokes get; `localenvx -- get NAME` runs an external executable named get. `-p` is unsupported. Use get instead.
+
+Set/rm print target paths and affected key names before prompting `[Y/n]`. Enter confirms; `n` cancels; `-y` / `--yes` skips the prompt. Noninteractive input requires `-y`, also when stdin is reserved for a set value or password. Set updates the last occurrence and removes earlier duplicates; rm removes all occurrences. All changes are prepared and validated before saving. Each file is replaced atomically; a multi-file edit is not a filesystem transaction.
+
+## Compatibility and migration
+
+The compatibility baseline is [dotenv-cli 11.0.0](https://github.com/entropitor/dotenv-cli/blob/v11.0.0/cli.js), with [dotenv 17.1.0](https://github.com/motdotla/dotenv/blob/v17.1.0/lib/main.js) parsing and [dotenv-expand 12.0.0](https://github.com/motdotla/dotenv-expand/blob/v12.0.0/lib/main.js) expansion. Pinned oracle fixtures cover parsing and expansion using synthetic inputs; CLI tests use isolated `.env.example` fixtures. Localenvx retains encryption directives, initialization requirements, strict read errors, and its own opt-in summary.
+
+Parsing supports whitespace around `=`, `KEY: value`, inline comments, multiline single/double/backtick quotes, and keys containing dots, hyphens or leading digits. Double quotes decode only `\n` and `\r`; other backslashes remain literal. Unchanged files render byte-for-byte. Edited files retain comments, order and quote style where representable; line endings are normalized to LF. An edit whose value cannot roundtrip through dotenv syntax fails before saving. Expansion supports references, defaults, alternate values, escaping and cyclic references. Pathological replacement cycles that hang upstream terminate with the repeated reference left literal.
+
+Breaking interface changes:
+
+```sh
+# Before: later file wins by default
+localenvx run .env.base .env.local -- npm dev
+# After: first file wins by default
+localenvx run -e .env.local -e .env.base -- npm dev
+# Direct entry shares the same behavior
+localenvx -e .env.local -e .env.base -- npm dev
+
+# Before: get/set/rm and bulk operations used -f FILE
+# After:
+localenvx get API_URL -e config.vars
+localenvx set API_URL https://example.com -e config.vars -y
+localenvx rm API_URL -e config.vars -y
+localenvx --config-file private/config.toml run -e config.vars -- npm dev
+```
+
+Old positional file arguments and `-f` / `--file` are removed. In direct/run forms, the first positional argument now names the executable. Get now reads the final expanded environment, including inherited variables and `-v`, rather than a raw file value.
 
 ## Password sources (highest precedence first)
 
