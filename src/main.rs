@@ -12,7 +12,7 @@ mod ui;
 #[cfg(not(unix))]
 use anyhow::Context;
 use anyhow::{Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -26,6 +26,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     name = "localenvx",
     version,
+    disable_help_subcommand = true,
     about = "Encrypted environment-variable manager for local development",
     long_about = "No plaintext secrets on disk: sensitive values in .env are stored as XChaCha20-Poly1305\nciphertext, decrypted only during `localenvx run` and passed to the child process via environ."
 )]
@@ -50,6 +51,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Show commands and options (equivalent to --help)
+    Help,
+    /// Show credential and environment-file status without revealing values
+    Status,
     #[command(external_subcommand)]
     External(Vec<OsString>),
     /// Generate a salt, set the password and write the config
@@ -211,6 +216,14 @@ fn main() {
 }
 
 fn dispatch(cli: &Cli) -> Result<()> {
+    if matches!(cli.cmd, Some(Cmd::Help)) {
+        // Use the same parser path so formatting and global options match --help.
+        Cli::command()
+            .try_get_matches_from(["localenvx", "--help"])
+            .expect_err("--help returns DisplayHelp")
+            .print()?;
+        return Ok(());
+    }
     if cli.env.debug {
         println!(
             "{}",
@@ -234,10 +247,15 @@ fn dispatch(cli: &Cli) -> Result<()> {
         Some(Cmd::External(cmd)) => {
             cmd_run(&RunArgs { cmd: cmd.clone() }, &cli.env, cli.password_stdin)
         }
-        None => bail!(
-            "missing command\n\n{}",
-            status::format(&cli.env.files, cli.env.cascade.as_deref())
-        ),
+        None => bail!("missing command; use localenvx --help or localenvx status"),
+        Some(Cmd::Help) => unreachable!("help is handled before configuration"),
+        Some(Cmd::Status) => {
+            print!(
+                "{}",
+                status::format(&cli.env.files, cli.env.cascade.as_deref())
+            );
+            Ok(())
+        }
         Some(Cmd::Init(a)) => cmd_init(a),
         Some(Cmd::Run(a)) => cmd_run(a, &cli.env, cli.password_stdin),
         Some(Cmd::Set(a)) => cmd_set(a, &cli.env, cli.password_stdin),
