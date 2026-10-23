@@ -25,6 +25,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser)]
 #[command(
     name = "localenvx",
+    bin_name = "localenvx",
     version,
     disable_help_subcommand = true,
     about = "Encrypted environment-variable manager for local development",
