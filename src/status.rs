@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::{config, envfile::EnvFile, load};
 
 pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
-    let mut out = String::from("Status:\n");
+    let mut out = format!("localenvx v{}\nStatus:\n", crate::VERSION);
     if let Ok(dir) = config::config_dir() {
         let path = dir.join("config.toml");
         let _ = writeln!(
@@ -18,7 +18,7 @@ pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
     match config::config_path() {
         Ok(path) => {
             let state = match path.try_exists() {
-                Ok(false) => "not generated; run localenvx init",
+                Ok(false) => "not generated; run localenvx manage init",
                 Ok(true) => match config::load() {
                     Ok(_) => "initialized",
                     Err(_) => "unusable (invalid configuration or permissions)",
@@ -102,7 +102,7 @@ pub fn format(files: &[PathBuf], cascade: Option<&str>) -> String {
             }
         }
     }
-    out.push_str("\nSuggestions:\n  localenvx --help                 Show commands and options\n  localenvx init                   Create user credentials\n  localenvx init --project         Create project credentials\n  localenvx run -- <command>       Run with environment variables\n  localenvx list                   List variable names and encryption status\n");
+    out.push_str("\nSuggestions:\n  localenvx --help                 Show commands and options\n  localenvx manage init                   Create user credentials\n  localenvx manage init --config-file .localenvx/config.toml         Create project credentials\n  localenvx run -- <command>       Run with environment variables\n  localenvx manage ls                   List variable names and encryption status\n");
     out
 }
 

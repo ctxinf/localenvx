@@ -7,29 +7,19 @@ stdout/stderr, persisted files, and downstream command behavior.
 Pushing a new `v*` tag starts the release workflow, which calls the test workflow
 before building and publishing release assets. Branch pushes and pull requests do
 not trigger CI. The test workflow runs this suite on Linux, macOS, and Windows, on both x64 and
-ARM64. Password interaction tests run on all six runners: Unix uses PTYs, and Windows
-uses ConPTY through the pinned pywinpty adapter installed by CI. Windows ARM64
-uses x64 Python under emulation to drive the native ARM64 CLI. Only Unix signal,
+ARM64. Init and credential operations require no terminal or password input. Unix signal,
 shell-specific expansion, and confirmation PTY tests remain `cfg(unix)`.
 
 | Area | End-to-end assertions |
 | --- | --- |
-| init | Explicit/project configuration, stdin password, overwrite protection, existing encrypted project protection |
+| init | Explicit/project configuration, random keys, noninteractive initialization, key permissions, overwrite protection, existing encrypted project protection |
 | encrypt | Blacklist/whitelist policies, ENC/PLAIN directives, repeated key globs, empty values, idempotence, unchanged unselected values/comments |
-| decrypt | Explicit selection required, partial/all glob matches, plaintext policy after decryption, unmatched keys, wrong password, corrupt ciphertext, no partial writes on decryption failure |
-| passwd | Corrupt later file leaves earlier files/config unchanged; automated Unix PTY / Windows ConPTY: multi-file rotation, stored password, no-store, old password rejection, mismatch rollback |
-| set/rm | Multiple files, duplicate keys, confirmation, stdin values, empty values, invalid/conflicting arguments, missing keys, Unicode and space-containing paths |
+| decrypt | Explicit selection required, partial/all glob matches, plaintext policy after decryption, unmatched keys, wrong credential file, corrupt ciphertext, no partial writes on decryption failure |
+| set | Multiple files, duplicate keys, confirmation, stdin values, empty values, invalid/conflicting arguments, missing keys, Unicode and space-containing paths |
 | get/run | File/process/temporary precedence, lazy expansion/decryption, no-expand, native subprocess environment and exit codes on every platform, all three invocation styles; Unix signals |
-| credentials | Explicit/project/user selection, password stdin over environment/config, empty/wrong password, no password leakage in tested failures |
+| credentials | Explicit/project/user selection, ignored password environment, removed password flags/command, rejected legacy/malformed credentials, no key leakage in tested failures |
 | list/status | File/key/mode/encryption reports, no values or credentials, invalid/missing files, list without usable credentials |
 | help/skill/debug/quiet | Credential-free help/guide/debug, output consistency, quiet override |
-
-Run Windows terminal tests locally with Python 3.12 and
-`python -m pip install --only-binary=:all: pywinpty==3.0.2`, then
-`cargo test --locked --test cli`. Set `LOCALENVX_TEST_PYTHON` to an absolute Python
-executable path if it is not on PATH. Missing terminal dependencies fail the tests
-rather than skipping them. CI has separate unit/CLI steps and a job timeout;
-terminal adapters also enforce per-process deadlines.
 
 Windows ACL behavior, Web UI HTTP/browser interactions, installers/upgrades,
 and exhaustive filesystem failure injection

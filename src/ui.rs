@@ -29,18 +29,17 @@ const FAVICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3
 </svg>
 "##;
 
-pub fn serve(start_port: u16, strict_port: bool, password_stdin: bool) -> Result<()> {
+pub fn serve(start_port: u16, strict_port: bool) -> Result<()> {
     let project = std::env::current_dir()?;
-    // Verify the password up front, so we do not discover it is wrong only after opening the page.
-    let mut sess = Session::open(password_stdin)?;
-    sess.key()?;
+    // Validate the credential file before opening the page.
+    let sess = Session::open()?;
     let sess = Mutex::new(sess);
 
     let (server, port) = bind(start_port, strict_port)?;
     let origin = format!("http://127.0.0.1:{port}");
     eprintln!(
         "{}  {}\n{}",
-        green("localenvx ui"),
+        green("localenvx manage ui"),
         cyan(&format!("http://127.0.0.1:{port}/")),
         dim(&format!(
             "  project {}   (Ctrl-C to quit)",
@@ -265,7 +264,7 @@ fn read_file(sess: &Mutex<Session>, project: &Path, name: &str) -> Result<serde_
     } else {
         EnvFile::empty_at(&path)
     };
-    let mut sess = sess.lock().unwrap();
+    let sess = sess.lock().unwrap();
     // Return the lines verbatim (comments and blanks included) so the frontend can render
     // the .env the way it actually looks.
     let mut lines = Vec::new();
@@ -275,7 +274,7 @@ fn read_file(sess: &Mutex<Session>, project: &Path, name: &str) -> Result<serde_
             Item::Comment(text) => serde_json::json!({ "kind": "comment", "text": text }),
             Item::Var(v) => {
                 let value = if v.is_encrypted() {
-                    crypto::decrypt(sess.key()?, &v.name, &v.value)?.to_string()
+                    crypto::decrypt(sess.key(), &v.name, &v.value)?.to_string()
                 } else {
                     v.value.clone()
                 };
@@ -310,8 +309,8 @@ fn write_var(sess: &Mutex<Session>, project: &Path, v: &serde_json::Value) -> Re
     file.upsert(&name, "", want_enc)?;
     let encrypt = want_enc.unwrap_or_else(|| file.should_encrypt(&name));
     let stored = if encrypt {
-        let mut sess = sess.lock().unwrap();
-        crypto::encrypt(sess.key()?, &name, &value)?
+        let sess = sess.lock().unwrap();
+        crypto::encrypt(sess.key(), &name, &value)?
     } else {
         value
     };

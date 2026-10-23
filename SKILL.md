@@ -1,31 +1,31 @@
 ---
 name: localenvx
-description: dotenv-cli-like usage. dotenvx-style encryption. A local encrypted .env manager.
+description: A local encrypted .env manager.
 ---
 
 # localenvx usage guide
 
-dotenv-cli-like usage. dotenvx-style encryption. A local encrypted .env manager.
+A local encrypted .env manager.
 
-Run `localenvx skill` to print this bundled guide; no configuration is needed.
-Use `localenvx --help` or `localenvx COMMAND --help` for flags.
+Run `localenvx --skill` to print this bundled guide; no configuration is needed.
+Use `localenvx --help` or `localenvx manage COMMAND --help` for flags.
 
 ## Workflow
 
 ```bash
-# Initialize local credentials; defaults to storing the password in the config.
-localenvx init
+# Generate a random key in the local credential file.
+localenvx manage init
 # Encrypt a value in .env without putting it in shell history.
-printf '%s' 'example-secret' | localenvx set API_TOKEN --enc --stdin -y
+printf '%s' 'example-secret' | localenvx manage set API_TOKEN --enc --stdin -y
 # Decrypt into the child environment only.
 localenvx run -- node app.js
 # Use project credentials instead of user credentials.
-localenvx init --project --no-store
+localenvx manage init --config-file .localenvx/config.toml
 ```
 
-`--project` uses `.localenvx/config.toml` in the current directory. Otherwise the nearest ancestor's project config wins over the user config. `--config-file PATH` wins over both; `LOCALENVX_CONFIG_DIR` overrides the user config directory, and `XDG_CONFIG_HOME` overrides its base on all platforms. Project initialization rejects existing encrypted env files to avoid losing access to user-encrypted values.
+By default, the nearest `.localenvx/config.toml` found from the current directory upward wins over the user config. `init` defaults to creating user credentials; use `--config-file .localenvx/config.toml` to initialize project credentials. `--config-file PATH` wins over both; `LOCALENVX_CONFIG_DIR` overrides the user config directory, and `XDG_CONFIG_HOME` overrides its base on all platforms. Project initialization rejects existing encrypted env files to avoid losing access to user-encrypted values.
 
-For agents: use `list` and `status` to inspect metadata. `get`, `decrypt`, and the local UI reveal secrets; only use them when requested. Keep credentials and encrypted env files out of commits unless the user explicitly chooses otherwise. Encryption protects stored values, not against a process that can read credentials or invoke this tool.
+For agents: use `manage ls` and `manage status` to inspect metadata. `manage get`, `manage dec`, and the local UI reveal secrets; only use them when requested. Keep credentials and encrypted env files out of commits unless the user explicitly chooses otherwise. Encryption protects stored values, not against a process that can read credentials or invoke this tool.
 
 ## Platforms
 
@@ -60,19 +60,20 @@ DATABASE_URL=encrypted:v1:BFc4vRxLq8mN2pQ...
 
 | Command | Description |
 |---|---|
-| `init [--no-store] [--force]` | Generate a salt, set the password |
+| `manage status` | Show version, credentials and file metadata |
+| `manage init [--config-file PATH]` | Generate a random credential key file; never overwrite existing credentials |
 | `[OPTIONS] [--] CMD [ARGS...]` | Direct run; arguments after CMD pass through untouched |
 | `run [OPTIONS] [--] CMD [ARGS...]` | Explicit run, sharing the direct entry's resolution and execution |
-| `set NAME [VALUE] [--enc\|--plain] [--stdin] [-e FILE]... [-y]` | Write to every selected file after confirmation |
-| `get NAME [OPTIONS]` | Print the final environment value, using the same resolution as run; missing names are errors |
-| `list [-e FILE]...` &nbsp;(alias `ls`) | List key names and encryption status only |
-| `rm NAME [-e FILE]... [-y]` | Remove every occurrence from the selected files after confirmation |
-| `encrypt [-k GLOB]... [-e FILE]` &nbsp;(alias `enc`) | Bulk-encrypt one file according to its mode |
-| `decrypt -k GLOB... [-e FILE]` &nbsp;(alias `dec`) | Decrypt one file to plaintext |
-| `passwd [-e FILE]... [--no-store]` | Change the password and re-encrypt the selected files |
-| `ui [--port N] [--strict-port]` | Local web UI |
+| `manage set NAME [VALUE] [--enc\|--plain] [--stdin] [-e FILE]... [-y]` | Write to every selected file after confirmation |
+| `manage get NAME [OPTIONS]` | Print the final environment value, using the same resolution as run; missing names are errors |
+| `manage ls [-e FILE]...` | List key names and encryption status only |
+| `manage enc [-k GLOB]... [-e FILE]` | Bulk-encrypt one file according to its mode |
+| `manage dec -k GLOB... [-e FILE]` | Decrypt one file to plaintext |
+| `manage ui [--port N] [--strict-port]` | Local web UI |
 
-All environment-file selectors use `-e`; omitted selectors use `.env`, except `passwd`, where omission changes only the credential config. `--config-file PATH` selects the credential config for every command, including `init` and `ui`, ahead of the existing default config location. Run and get still require initialization, including for plaintext input. Debug does not.
+Options belong to each command and are not global; place them after the command (for example, `localenvx manage get -e .env KEY`). Run may be omitted.
+
+All environment-file selectors use `-e`; omitted selectors use `.env`. `--config-file PATH` selects the credential config for run and management commands except status, including `init` and `ui`, ahead of the existing default config location. Run and get still require initialization, including for plaintext input. Debug does not.
 
 Run/get options:
 
@@ -80,37 +81,33 @@ Run/get options:
 - Repeat `-v NAME=value` to inject temporary values after expansion. They have highest priority, repeated names use the last value, empty values are rejected, and values stay literal. `-v` has no effect on persistent edits.
 - `-c [ENVIRONMENT]` selects `<base>.<environment>.local`, `<base>.local`, `<base>.<environment>`, then `<base>`, in that priority order for each `-e` base. Bare `-c` selects `<base>.local`, then `<base>`. Use `-c -- COMMAND` to disambiguate a bare cascade flag from its optional environment argument. Cascade and override conflict.
 - Expansion is enabled over the merged environment, including decrypted values and inherited variables; `--no-expand` leaves references literal. Temporary `-v` values are applied afterward.
-- `--debug` prints the candidate paths and temporary variable object, including their values, then exits without reading files, loading credentials, or executing a command.
+- Run-only `--debug` prints the candidate paths and temporary variable object, including their values, then exits without reading files, loading credentials, or executing a command.
 - Run/get are quiet by default. `--quiet=false` / `-q=false` enables a summary on stderr; `--quiet` / `-q` silences it. Explicit flags take precedence over `LOCALENVX_QUIET=1|true|0|false`. Missing cascade candidates all together still produce a warning.
 
 A missing default or explicitly selected file is an error. Missing cascade candidates are skipped; when all candidates are missing, a warning is printed and execution continues using the process environment plus `-v`. Other read errors remain errors.
 
 Only winning ciphertext is decrypted. Values needed by expansion count as effective: if `REF=$SECRET` and `-v SECRET=temporary` is supplied, REF expands from SECRET's loaded value before the temporary replacement. Completely unused ciphertext shadowed by files, the process environment, or `-v` does not need a key.
 
-Built-in command names take precedence: `localenvx get NAME` invokes get; `localenvx -- get NAME` runs an external executable named get. `-p` is unsupported. Use get instead.
+Only `run` and `manage` are reserved at the root. `localenvx manage get NAME` reads a variable; `localenvx get NAME` runs an executable named get. Use `localenvx -- manage` to run an executable named manage. `-p` is unsupported.
 
-Set/rm print target paths and affected key names before prompting `[Y/n]`. Enter confirms; `n` cancels; `-y` / `--yes` skips the prompt. Noninteractive input requires `-y`, also when stdin is reserved for a set value or password. Set updates the last occurrence and removes earlier duplicates; rm removes all occurrences. All changes are prepared and validated before saving. Each file is replaced atomically; a multi-file edit is not a filesystem transaction.
+Set prints target paths and affected key names before prompting `[Y/n]`. Enter confirms; `n` cancels; `-y` / `--yes` skips the prompt. Noninteractive input requires `-y`, also when stdin is reserved for a set value. Set updates the last occurrence and removes earlier duplicates. Delete variables directly from the file when needed. All changes are prepared and validated before saving. Each file is replaced atomically; a multi-file edit is not a filesystem transaction.
 
-## Password sources (highest precedence first)
+## Credentials and backups
 
-1. `--password-stdin` / interactive input
-2. `LOCALENVX_PASSWORD`
-3. `password` in the credential config (Unix: `~/.config/localenvx/config.toml`; Windows: `%APPDATA%\localenvx\config.toml`; Unix permissions: `0600`)
-4. Interactive prompt; an error exit when stdin is not a TTY
+`manage init` creates a version 2 TOML credential file containing a randomly generated 256-bit key:
 
-`--password <value>` is deliberately **not** offered: it would land in shell history and `/proc/*/cmdline`.
-
-## Moving to another machine
-
-The key is `argon2id(password, salt)`. The salt is generated randomly at `init` time and stored **in plaintext** in the `[kdf]` section of `config.toml`. The salt is not a secret (leaking it is harmless; it only prevents rainbow tables and reuse across installs), but it is required for decryption:
-
-```bash
-# On the new machine: copy .env and config.toml, then
-chmod 600 ~/.config/localenvx/config.toml
-# If you do not want the password to travel, delete the password line from config.toml and use LOCALENVX_PASSWORD
+```toml
+version = 2
+key = "<base64-encoded 32-byte key>"
 ```
 
-**Do not** run `localenvx init` on the new machine — that generates a new salt, and even the same password will not open the old ciphertext.
+No passwords, prompts, password environment variables, salt, or password derivation are used. `passwd`, `--password-stdin`, `--no-store`, and `--force` are removed. Initialization refuses to overwrite an existing credential file. Unix permissions are 0600. Back up this file securely: possession of it allows decryption, and losing it makes the encrypted values unrecoverable.
+
+To move to another machine, copy both the encrypted `.env` and its credential file. On Unix, run `chmod 600` on the copied credential file. Select it with `--config-file PATH` or place it at the project's `.localenvx/config.toml` or the user config location. Do not generate a replacement key for existing ciphertext.
+
+## Migrating password-based credentials
+
+Version 1 credential files are rejected without changes. Use the previous release with the original credentials to decrypt existing files first. Back up and move aside the old credential file, run `manage init`, then encrypt the plaintext files using the new credential file. A previous password change that left ciphertext untouched requires the credential backup from before that change; a newly generated key cannot recover those values.
 
 ## Encryption
 
@@ -118,15 +115,14 @@ chmod 600 ~/.config/localenvx/config.toml
 encrypted:v1:<base64url( nonce[24] ‖ ciphertext ‖ tag[16] )>
 ```
 
-XChaCha20-Poly1305, with the key derived from the password via argon2id (m=64MB, t=3, p=4). The **AAD binds the variable name**, so ciphertext pasted onto another key fails to decrypt. The stderr summary never prints values.
+XChaCha20-Poly1305 with the random 256-bit key loaded directly from the credential file. The **AAD binds the variable name**, so ciphertext pasted onto another key fails to decrypt. The stderr summary never prints values.
 
 ## Known trade-offs
 
-The password is stored in plaintext in the config by default, so this **does not protect against active theft**. To tighten it, move the password out of the config and add these denies to your Claude Code settings:
-
+The credential file contains the encryption key. Keep it private and out of version control. For agents, restrict access to credentials and commands that reveal values:
 ```
 Read(**/.env*)
 Read(**/.config/localenvx/**)
-Bash(localenvx get:*)
-Bash(localenvx ui:*)
+Bash(localenvx manage get:*)
+Bash(localenvx manage ui:*)
 ```

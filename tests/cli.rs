@@ -14,7 +14,11 @@ impl Project {
         ));
         std::fs::create_dir_all(&path).unwrap();
         let project = Self(path);
-        std::fs::write(project.0.join("config.toml"), "version = 1\npassword = 'synthetic-test-password'\n[kdf]\nalgo = 'argon2id'\nsalt = 'MTIzNDU2Nzg5MGFiY2RlZg=='\nm = 8\nt = 1\np = 1\n").unwrap();
+        std::fs::write(
+            project.0.join("config.toml"),
+            "version = 2\nkey = 'MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWY='\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -38,7 +42,7 @@ impl Project {
         cmd.current_dir(&self.0)
             .env_clear()
             .env("PATH", "/usr/bin:/bin");
-        cmd.arg("--config-file").arg(self.0.join("config.toml"));
+        cmd.env("LOCALENVX_CONFIG_DIR", &self.0);
         cmd
     }
     fn run(&self, args: &[&str]) -> Output {
@@ -73,37 +77,55 @@ fn final_environment_priority_expansion_and_get_match_run() {
         let output = p
             .command()
             .env("K", "system")
+            .args(["manage", "get"])
             .args(["-e", path(&first), "-e", path(&second)])
             .args(&extra)
-            .args(["get", "K"])
+            .args(["K"])
             .output()
             .unwrap();
         success(&output);
         assert_eq!(text(&output), format!("{expected}\n"));
         assert!(output.stderr.is_empty());
     }
-    let output = p.run(&["-e", path(&first), "-e", path(&second), "get", "URL"]);
+    let output = p.run(&[
+        "manage",
+        "get",
+        "-e",
+        path(&first),
+        "-e",
+        path(&second),
+        "URL",
+    ]);
     success(&output);
     assert_eq!(text(&output), "first/ok\n");
     #[cfg(unix)]
     for entry in [vec!["run", "--"], vec!["--"], vec![]] {
         let output = p
             .command()
+            .args(entry.first().filter(|x| **x == "run"))
             .args(["-e", path(&first), "-e", path(&second)])
-            .args(entry)
+            .args(entry.iter().filter(|x| **x != "run"))
             .args(["/bin/sh", "-c", "printf '%s\\n' \"$URL\""])
             .output()
             .unwrap();
         success(&output);
         assert_eq!(text(&output), "first/ok\n");
     }
-    let output = p.run(&["-e", path(&first), "--no-expand", "get", "URL"]);
+    let output = p.run(&["manage", "get", "-e", path(&first), "--no-expand", "URL"]);
     success(&output);
     assert_eq!(text(&output), "$K/${MISSING:-ok}\n");
-    let output = p.run(&["-e", path(&first), "-v", "K=temporary", "get", "URL"]);
+    let output = p.run(&[
+        "manage",
+        "get",
+        "-e",
+        path(&first),
+        "-v",
+        "K=temporary",
+        "URL",
+    ]);
     success(&output);
     assert_eq!(text(&output), "first/ok\n");
-    let output = p.run(&["-e", path(&first), "-v", "K=$literal", "get", "K"]);
+    let output = p.run(&["manage", "get", "-e", path(&first), "-v", "K=$literal", "K"]);
     success(&output);
     assert_eq!(text(&output), "$literal\n");
 }
@@ -114,9 +136,18 @@ fn shadowed_corrupt_ciphertext_is_never_decrypted() {
     let first = p.fixture("first", "K=good\n");
     let bad = p.fixture("bad", "K=encrypted:v1:invalid\n");
     for args in [
-        vec!["-e", path(&first), "-e", path(&bad), "get", "K"],
-        vec!["-e", path(&bad), "-e", path(&first), "-o", "get", "K"],
-        vec!["-e", path(&bad), "-v", "K=good", "get", "K"],
+        vec!["manage", "get", "-e", path(&first), "-e", path(&bad), "K"],
+        vec![
+            "manage",
+            "get",
+            "-e",
+            path(&bad),
+            "-e",
+            path(&first),
+            "-o",
+            "K",
+        ],
+        vec!["manage", "get", "-e", path(&bad), "-v", "K=good", "K"],
     ] {
         let output = p.run(&args);
         success(&output);
@@ -125,23 +156,31 @@ fn shadowed_corrupt_ciphertext_is_never_decrypted() {
     let output = p
         .command()
         .env("K", "system")
-        .args(["-e", path(&bad), "get", "K"])
+        .args(["manage", "get", "-e", path(&bad), "K"])
         .output()
         .unwrap();
     success(&output);
     assert_eq!(text(&output), "system\n");
-    assert!(!p.run(&["-e", path(&bad), "get", "K"]).status.success());
+    assert!(
+        !p.run(&["manage", "get", "-e", path(&bad), "K"])
+            .status
+            .success()
+    );
 }
 
 #[test]
 fn missing_files_cascade_and_read_free_debug() {
     let p = Project::new();
-    assert!(!p.run(&["get", "PATH"]).status.success());
-    let output = p.run(&["-e", "absent", "-c", "test", "get", "PATH"]);
+    assert!(!p.run(&["manage", "get", "PATH"]).status.success());
+    let output = p.run(&["manage", "get", "-e", "absent", "-c", "test", "PATH"]);
     success(&output);
     assert_eq!(text(&output), "/usr/bin:/bin\n");
     assert!(String::from_utf8_lossy(&output.stderr).contains("warn:"));
-    assert!(!p.run(&["-c", "test", "-o", "get", "PATH"]).status.success());
+    assert!(
+        !p.run(&["manage", "get", "-c", "test", "-o", "PATH"])
+            .status
+            .success()
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_localenvx"))
         .current_dir(&p.0)
         .env_clear()
@@ -166,11 +205,12 @@ fn multi_file_edits_require_confirmation_and_remove_duplicates() {
     let first = p.fixture("first", "A=one\nA=two\n");
     let second = p.fixture("second", "A=other\n");
     let args = [
+        "manage",
+        "set",
         "-e",
         path(&first),
         "-e",
         path(&second),
-        "set",
         "A",
         "updated",
         "--plain",
@@ -180,18 +220,13 @@ fn multi_file_edits_require_confirmation_and_remove_duplicates() {
     let output = p.command().args(args).arg("-y").output().unwrap();
     success(&output);
     for file in [&first, &second] {
-        let output = p.run(&["-e", path(file), "get", "A"]);
+        let output = p.run(&["manage", "get", "-e", path(file), "A"]);
         success(&output);
         assert_eq!(text(&output), "updated\n");
         assert_eq!(
             std::fs::read_to_string(file).unwrap().matches("A=").count(),
             1
         );
-    }
-    let output = p.run(&["-e", path(&first), "-e", path(&second), "rm", "A", "-y"]);
-    success(&output);
-    for file in [&first, &second] {
-        assert!(!std::fs::read_to_string(file).unwrap().contains("A="));
     }
 }
 
@@ -203,16 +238,25 @@ fn encrypted_dependencies_expand_before_temporary_values() {
         "# @localenvx-mode:whitelist\nREF=${SECRET:-${MISSING:-fallback}}\n",
     );
     let output = p.run(&[
+        "manage",
+        "set",
         "-e",
         path(&file),
-        "set",
         "SECRET",
         "decrypted",
         "--enc",
         "-y",
     ]);
     success(&output);
-    let output = p.run(&["-e", path(&file), "-v", "SECRET=temporary", "get", "REF"]);
+    let output = p.run(&[
+        "manage",
+        "get",
+        "-e",
+        path(&file),
+        "-v",
+        "SECRET=temporary",
+        "REF",
+    ]);
     success(&output);
     assert_eq!(text(&output), "decrypted\n");
 }
@@ -257,7 +301,7 @@ fn terminal_confirmation_accepts_enter_and_declines_no() {
         let slave = unsafe { File::from_raw_fd(slave) };
         let child = p
             .command()
-            .args(["-e", path(&file), "set", "A", "new", "--plain"])
+            .args(["manage", "set", "-e", path(&file), "A", "new", "--plain"])
             .stdin(Stdio::from(slave))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -267,60 +311,126 @@ fn terminal_confirmation_accepts_enter_and_declines_no() {
         let output = child.wait_with_output().unwrap();
         success(&output);
         assert!(String::from_utf8_lossy(&output.stderr).contains("[Y/n]"));
-        let output = p.run(&["-e", path(&file), "get", "A"]);
+        let output = p.run(&["manage", "get", "-e", path(&file), "A"]);
         success(&output);
         assert_eq!(text(&output), format!("{expected}\n"));
     }
 }
 
 #[test]
-fn explicit_config_initialization_and_password_stdin() {
-    use std::io::Write;
-    use std::process::Stdio;
+fn init_creates_random_credentials_without_input_and_never_overwrites() {
     let p = Project::new();
-    let file = p.fixture("first", "");
-    let mut child = p
-        .command()
-        .args(["init", "--force"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"synthetic-new-password\n")
-        .unwrap();
-    success(&child.wait_with_output().unwrap());
-    let mut child = p
-        .command()
-        .args([
-            "--password-stdin",
+    let file = p.fixture("first", "A=secret\n");
+    let first = p.0.join("new/first.toml");
+    let second = p.0.join("new/second.toml");
+    for config in [&first, &second] {
+        success(&p.run(&["manage", "init", "--config-file", path(config)]));
+        let text = std::fs::read_to_string(config).unwrap();
+        let cfg: toml::Value = text.parse().unwrap();
+        assert_eq!(cfg["version"].as_integer(), Some(2));
+        assert_eq!(cfg["key"].as_str().unwrap().len(), 44);
+        assert!(cfg.get("password").is_none());
+        assert!(cfg.get("kdf").is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(config).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        failure(
+            &p.run(&["manage", "init", "--config-file", path(config)]),
+            "already exists",
+        );
+        assert_eq!(std::fs::read_to_string(config).unwrap(), text);
+    }
+    assert_ne!(
+        std::fs::read(&first).unwrap(),
+        std::fs::read(&second).unwrap()
+    );
+    success(&p.run(&[
+        "manage",
+        "enc",
+        "--config-file",
+        path(&first),
+        "-e",
+        path(&file),
+    ]));
+    let ciphertext = std::fs::read(&file).unwrap();
+    failure(
+        &p.run(&[
+            "manage",
+            "get",
+            "--config-file",
+            path(&second),
             "-e",
             path(&file),
-            "set",
             "A",
-            "test",
-            "--enc",
-            "-y",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        ]),
+        "decryption failed",
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), ciphertext);
+    assert_eq!(
+        text(&p.run(&[
+            "manage",
+            "get",
+            "--config-file",
+            path(&first),
+            "-e",
+            path(&file),
+            "A"
+        ])),
+        "secret\n"
+    );
+    failure(
+        &p.run(&["manage", "init", "--force", "--config-file", path(&first)]),
+        "unexpected argument",
+    );
+}
+
+#[test]
+fn concurrent_init_never_replaces_the_winning_key() {
+    let p = Project::new();
+    let config = p.0.join("concurrent.toml");
+    let args = ["manage", "init", "--config-file", path(&config)];
+    let first = p
+        .command()
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"synthetic-new-password\n")
+    let second = p
+        .command()
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
-    success(&child.wait_with_output().unwrap());
-    let output = p.run(&["-e", path(&file), "get", "A"]);
-    success(&output);
-    assert_eq!(text(&output), "test\n");
+    let a = first.wait_with_output().unwrap();
+    let b = second.wait_with_output().unwrap();
+    assert_ne!(a.status.success(), b.status.success());
+    let original = std::fs::read(&config).unwrap();
+    let file = p.fixture("", "A=concurrent-secret\n");
+    success(&p.run(&[
+        "manage",
+        "enc",
+        "--config-file",
+        path(&config),
+        "-e",
+        path(&file),
+    ]));
+    success(&p.run(&[
+        "manage",
+        "get",
+        "--config-file",
+        path(&config),
+        "-e",
+        path(&file),
+        "A",
+    ]));
+    assert_eq!(std::fs::read(&config).unwrap(), original);
 }
 
 #[test]
@@ -330,7 +440,7 @@ fn quiet_false_overrides_the_quiet_environment_and_run_debug_needs_no_command() 
     let output = p
         .command()
         .env("LOCALENVX_QUIET", "true")
-        .args(["-q=false", "-e", path(&file), "get", "K"])
+        .args(["manage", "get", "-q=false", "-e", path(&file), "K"])
         .output()
         .unwrap();
     success(&output);
@@ -364,13 +474,14 @@ fn unused_conditional_branches_do_not_decrypt_temporary_replacements() {
             };
             let file = p.fixture(&format!("case-{i}-{before}"), &content);
             for command in [
-                vec!["get", "K"],
+                vec!["manage", "get", "K"],
                 vec!["run", "--", "/bin/sh", "-c", "printf '%s\\n' \"$K\""],
             ] {
                 let output = p
                     .command()
+                    .args(&command[..if command[0] == "manage" { 2 } else { 1 }])
                     .args(["-e", path(&file), "-v", "BAD=temporary"])
-                    .args(command)
+                    .args(&command[if command[0] == "manage" { 2 } else { 1 }..])
                     .output()
                     .unwrap();
                 success(&output);
@@ -395,7 +506,15 @@ fn selected_conditional_branches_still_require_decryption() {
             &format!("bad-{i}"),
             &format!("GOOD=ok\nBAD=encrypted:v1:invalid\nK={expression}\n"),
         );
-        let output = p.run(&["-e", path(&file), "-v", "BAD=temporary", "get", "K"]);
+        let output = p.run(&[
+            "manage",
+            "get",
+            "-e",
+            path(&file),
+            "-v",
+            "BAD=temporary",
+            "K",
+        ]);
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("BAD:"));
     }
@@ -404,32 +523,51 @@ fn selected_conditional_branches_still_require_decryption() {
         "# @localenvx-mode:whitelist\nK=${SECRET:-${BAD:-fallback}}\nBAD=encrypted:v1:invalid\n",
     );
     success(&p.run(&[
+        "manage",
+        "set",
         "-e",
         path(&file),
-        "set",
         "SECRET",
         "decrypted",
         "--enc",
         "-y",
     ]));
     let output = p.run(&[
+        "manage",
+        "get",
         "-e",
         path(&file),
         "-v",
         "BAD=temporary",
         "-v",
         "SECRET=temporary",
-        "get",
         "K",
     ]);
     success(&output);
     assert_eq!(text(&output), "decrypted\n");
     // The condition must use decrypted emptiness, not ciphertext non-emptiness.
-    success(&p.run(&["-e", path(&file), "set", "SECRET", "", "--enc", "-y"]));
+    success(&p.run(&[
+        "manage",
+        "set",
+        "-e",
+        path(&file),
+        "SECRET",
+        "",
+        "--enc",
+        "-y",
+    ]));
     assert!(
-        !p.run(&["-e", path(&file), "-v", "BAD=temporary", "get", "K"])
-            .status
-            .success()
+        !p.run(&[
+            "manage",
+            "get",
+            "-e",
+            path(&file),
+            "-v",
+            "BAD=temporary",
+            "K"
+        ])
+        .status
+        .success()
     );
 }
 
@@ -440,7 +578,15 @@ fn process_environment_dependencies_are_lazy_too() {
     let output = p
         .command()
         .env("K", "${GOOD:-$BAD}")
-        .args(["-e", path(&file), "-v", "BAD=temporary", "get", "K"])
+        .args([
+            "manage",
+            "get",
+            "-e",
+            path(&file),
+            "-v",
+            "BAD=temporary",
+            "K",
+        ])
         .output()
         .unwrap();
     success(&output);
@@ -449,13 +595,14 @@ fn process_environment_dependencies_are_lazy_too() {
         .command()
         .env("K", "$BAD")
         .args([
+            "manage",
+            "get",
             "-e",
             path(&file),
             "-v",
             "BAD=temporary",
             "-v",
             "K=replaced",
-            "get",
             "K",
         ])
         .output()
@@ -463,12 +610,13 @@ fn process_environment_dependencies_are_lazy_too() {
     success(&output);
     assert_eq!(text(&output), "replaced\n");
     let output = p.run(&[
+        "manage",
+        "get",
         "-e",
         path(&file),
         "--no-expand",
         "-v",
         "BAD=temporary",
-        "get",
         "GOOD",
     ]);
     success(&output);
@@ -489,41 +637,69 @@ fn project_credentials_win_and_user_credentials_are_a_fallback() {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_localenvx"));
         cmd.current_dir(file.parent().unwrap())
             .env_clear()
-            .env("LOCALENVX_CONFIG_DIR", &user_dir)
-            .args(["-e", path(&file)]);
+            .env("LOCALENVX_CONFIG_DIR", &user_dir);
         cmd
     };
     let output = command()
-        .args(["set", "A", "synthetic", "--enc", "-y"])
+        .args([
+            "manage",
+            "set",
+            "-e",
+            path(&file),
+            "A",
+            "synthetic",
+            "--enc",
+            "-y",
+        ])
         .output()
         .unwrap();
     success(&output);
-    let output = command().args(["get", "A"]).output().unwrap();
+    let output = command()
+        .args(["manage", "get", "-e", path(&file), "A"])
+        .output()
+        .unwrap();
     success(&output);
     assert_eq!(text(&output), "synthetic\n");
     std::fs::copy(p.0.join("config.toml"), user_dir.join("config.toml")).unwrap();
     std::fs::write(user_dir.join("config.toml"), "invalid config").unwrap();
-    let output = command().args(["get", "A"]).output().unwrap();
+    let output = command()
+        .args(["manage", "get", "-e", path(&file), "A"])
+        .output()
+        .unwrap();
     success(&output);
     assert_eq!(text(&output), "synthetic\n");
     // Without project credentials, the invalid user configuration is reported.
     std::fs::remove_file(project_dir.join("config.toml")).unwrap();
-    let output = command().args(["get", "A"]).output().unwrap();
+    let output = command()
+        .args(["manage", "get", "-e", path(&file), "A"])
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("failed to parse"));
     std::fs::copy(p.0.join("config.toml"), user_dir.join("config.toml")).unwrap();
-    success(&command().args(["get", "A"]).output().unwrap());
+    success(
+        &command()
+            .args(["manage", "get", "-e", path(&file), "A"])
+            .output()
+            .unwrap(),
+    );
     std::fs::copy(p.0.join("config.toml"), project_dir.join("config.toml")).unwrap();
     std::fs::write(project_dir.join("config.toml"), "invalid config").unwrap();
-    let output = command().args(["get", "A"]).output().unwrap();
+    let output = command()
+        .args(["manage", "get", "-e", path(&file), "A"])
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("failed to parse"));
     // An explicit config overrides an invalid project configuration.
     let output = command()
         .args([
+            "manage",
+            "get",
+            "-e",
+            path(&file),
             "--config-file",
             path(&user_dir.join("config.toml")),
-            "get",
             "A",
         ])
         .output()
@@ -534,9 +710,12 @@ fn project_credentials_win_and_user_credentials_are_a_fallback() {
     // Explicit selection takes precedence even when the user config is invalid.
     let output = command()
         .args([
+            "manage",
+            "get",
+            "-e",
+            path(&file),
             "--config-file",
             path(&project_dir.join("config.toml")),
-            "get",
             "A",
         ])
         .output()
@@ -546,44 +725,26 @@ fn project_credentials_win_and_user_credentials_are_a_fallback() {
 
 #[test]
 fn project_initialization_is_explicit_and_does_not_replace_user_credentials() {
-    use std::io::Write;
-    use std::process::Stdio;
     let p = Project::new();
-    let user_dir = p.0.join("user");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_localenvx"));
-    let mut child = cmd
-        .current_dir(&p.0)
-        .env_clear()
-        .env("LOCALENVX_CONFIG_DIR", &user_dir)
-        .args(["init", "--project"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"synthetic-project-password\n")
-        .unwrap();
-    success(&child.wait_with_output().unwrap());
+    let original = std::fs::read(p.0.join("config.toml")).unwrap();
+    success(&p.run(&["manage", "init", "--config-file", ".localenvx/config.toml"]));
     assert!(p.0.join(".localenvx/config.toml").is_file());
-    assert!(!user_dir.exists());
-    let output = cmd.output().unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("already exists"));
+    assert_eq!(std::fs::read(p.0.join("config.toml")).unwrap(), original);
+    failure(
+        &p.run(&["manage", "init", "--config-file", ".localenvx/config.toml"]),
+        "already exists",
+    );
 }
 
 #[test]
 fn status_reports_configuration_and_suggestions_without_values() {
     let p = Project::new();
-    let file = p.fixture(
+    let _file = p.fixture(
         "",
         "A=synthetic-private-plain\nB=encrypted:v1:synthetic-private-ciphertext\n",
     );
     // No -e: verify discovery in the isolated project directory.
-    let output = p.run(&["status"]);
+    let output = p.run(&["manage", "status"]);
     success(&output);
     assert!(output.stderr.is_empty());
     let report = String::from_utf8_lossy(&output.stdout);
@@ -595,21 +756,21 @@ fn status_reports_configuration_and_suggestions_without_values() {
         "2 variables, 1 encrypted, 1 plaintext",
         "localenvx --help",
         "localenvx run -- <command>",
-        "localenvx init --project",
+        "localenvx manage init --config-file .localenvx/config.toml",
     ] {
         assert!(report.contains(expected), "missing {expected}: {report}");
     }
     assert!(!report.contains("synthetic-private"));
-    assert!(!report.contains("synthetic-test-password"));
+    assert!(!report.contains("MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWY="));
     // Invalid configurations must not expose parser diagnostics containing secrets.
     std::fs::write(p.0.join("config.toml"), "synthetic-config-secret").unwrap();
-    let output = p.run(&["-e", path(&file), "status"]);
+    let output = p.run(&["manage", "status"]);
     let report = String::from_utf8_lossy(&output.stdout);
     assert!(report.contains("unusable"));
     assert!(report.contains("Suggestions:"));
     assert!(!report.contains("synthetic-config-secret"));
     std::fs::remove_file(p.0.join("config.toml")).unwrap();
-    let output = p.run(&["-e", path(&file), "status"]);
+    let output = p.run(&["manage", "status"]);
     let report = String::from_utf8_lossy(&output.stdout);
     assert!(report.contains("not generated"));
     assert!(report.contains("1 encrypted"));
@@ -618,66 +779,104 @@ fn status_reports_configuration_and_suggestions_without_values() {
 #[test]
 fn status_tolerates_missing_and_invalid_environment_files() {
     let p = Project::new();
-    let file = p.fixture(
+    let _file = p.fixture(
         "",
         "# @localenvx-mode:whitelist\n# @localenvx-mode:blacklist\nA=synthetic-private-value\n",
     );
-    let output = p.run(&["-e", path(&file), "-e", "missing.vars", "--quiet", "status"]);
+    let output = p.run(&["manage", "status"]);
     let report = String::from_utf8_lossy(&output.stdout);
     success(&output);
     assert!(report.contains("unreadable or invalid"));
-    assert!(report.contains("missing.vars: not found"));
+    assert!(report.contains(".env: not found"));
     assert!(report.contains("localenvx --help"));
     assert!(!report.contains("synthetic-private-value"));
 }
 
 #[test]
-fn missing_command_is_brief_and_help_matches_help_flag() {
+fn status_has_no_business_options() {
     let p = Project::new();
-    let output = p.run(&[]);
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("missing command"));
-    assert!(stderr.contains("--help"));
-    assert!(!stderr.contains("Status:"));
-    assert!(!stderr.contains("Active config:"));
-    assert_eq!(stderr.lines().count(), 1);
-
-    // Help must work with no usable credentials and must not inspect env files.
-    std::fs::remove_file(p.0.join("config.toml")).unwrap();
-    let flag = p.run(&["--help"]);
-    let command = p.run(&["help"]);
-    success(&flag);
-    success(&command);
-    assert_eq!(command.stdout, flag.stdout);
-    assert!(command.stderr.is_empty());
-    assert!(text(&command).contains("status"));
+    let output = p.run(&["manage", "status", "--help"]);
+    success(&output);
+    assert!(text(&output).contains("-h, --help"));
+    for option in [
+        "--password-stdin",
+        "--config-file",
+        "--project",
+        "--quiet",
+        "-e",
+        "-c",
+    ] {
+        assert!(
+            !text(&output)
+                .lines()
+                .any(|line| line.trim_start().starts_with(option)),
+            "{option}"
+        );
+        assert!(
+            !p.run(&["manage", "status", option]).status.success(),
+            "{option}"
+        );
+    }
 }
 
 #[test]
-fn project_initialization_rejects_existing_user_encryption_before_password_prompt() {
+fn startup_and_help_show_version_and_examples() {
+    let p = Project::new();
+    std::fs::remove_file(p.0.join("config.toml")).unwrap();
+    for args in [vec![], vec!["--help"], vec!["manage", "status"]] {
+        let output = p.run(&args);
+        success(&output);
+        assert!(text(&output).contains(concat!("localenvx v", env!("CARGO_PKG_VERSION"))));
+        assert!(output.stderr.is_empty());
+    }
+    let output = p.run(&[]);
+    assert_eq!(text(&output).lines().count(), 2);
+    assert!(text(&output).contains("use localenvx --help"));
+    let output = p.run(&["--help"]);
+    assert!(text(&output).contains("Examples:"));
+    assert!(!text(&output).contains("--project"));
+    assert!(text(&output).contains("nearest .localenvx/config.toml"));
+    assert!(text(&output).contains("Init defaults to user config"));
+    assert!(text(&output).contains("--no-expand"));
+    assert!(!text(&output).contains("--port"));
+    let output = p.run(&["manage", "get", "--help"]);
+    success(&output);
+    assert!(text(&output).contains("--no-expand"));
+    assert!(!text(&output).contains("--debug"));
+    for args in [
+        vec!["manage", "set", "--no-expand"],
+        vec!["manage", "ui", "-e", "x"],
+        vec!["manage", "rm"],
+        vec!["manage", "list"],
+        vec!["manage", "encrypt"],
+        vec!["manage", "decrypt"],
+        vec!["manage", "help"],
+    ] {
+        assert!(!p.run(&args).status.success(), "{args:?}");
+    }
+}
+
+#[test]
+fn project_initialization_rejects_existing_user_encryption() {
     let p = Project::new();
     let file = p.fixture("nested/deep", "");
     success(&p.run(&[
+        "manage",
+        "set",
         "-e",
         path(&file),
-        "set",
         "SECRET",
         "synthetic",
         "--enc",
         "-y",
     ]));
     let original = std::fs::read(&file).unwrap();
-    for force in [false, true] {
+    {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_localenvx"));
         cmd.current_dir(&p.0)
             .env_clear()
             .env("LOCALENVX_CONFIG_DIR", &p.0)
-            .args(["init", "--project"]);
-        if force {
-            cmd.arg("--force");
-        }
+            .args(["manage", "init", "--config-file", ".localenvx/config.toml"]);
         let output = cmd.output().unwrap();
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -686,14 +885,14 @@ fn project_initialization_rejects_existing_user_encryption_before_password_promp
         assert!(!p.0.join(".localenvx/config.toml").exists());
         assert_eq!(std::fs::read(&file).unwrap(), original);
     }
-    success(&p.run(&["-e", path(&file), "get", "SECRET"]));
+    success(&p.run(&["manage", "get", "-e", path(&file), "SECRET"]));
 }
 
 #[test]
 fn bundled_guide_needs_no_credentials_or_env_files() {
     let p = Project::new();
     std::fs::remove_file(p.0.join("config.toml")).unwrap();
-    let output = p.run(&["skill"]);
+    let output = p.run(&["--skill"]);
     success(&output);
     assert_eq!(text(&output), include_str!("../SKILL.md"));
     assert!(output.stderr.is_empty());
@@ -704,13 +903,13 @@ fn native_child_runs_and_exit_codes_pass_through_on_every_platform() {
     let p = Project::new();
     let file = p.fixture("native", "K=synthetic\n");
     let executable = env!("CARGO_BIN_EXE_localenvx");
-    let output = p.run(&["-e", path(&file), "run", "--", executable, "--version"]);
+    let output = p.run(&["run", "-e", path(&file), "--", executable, "--version"]);
     success(&output);
     assert!(text(&output).starts_with("localenvx "));
     let output = p.run(&[
+        "run",
         "-e",
         path(&file),
-        "run",
         "--",
         executable,
         "--invalid-option",
@@ -746,17 +945,17 @@ fn bulk_encryption_respects_modes_and_is_idempotent() {
     let p = Project::new();
     for (mode, marked, unmarked) in [("whitelist", "ENC", false), ("blacklist", "PLAIN", true)] {
         let file = p.fixture(mode, &format!("# @localenvx-mode:{mode}\n# keep this comment\n# @{marked}\nMARKED=marked-value\nOTHER=other-value\n"));
-        success(&p.run(&["-e", path(&file), "encrypt"]));
+        success(&p.run(&["manage", "enc", "-e", path(&file)]));
         let stored = std::fs::read_to_string(&file).unwrap();
         assert!(stored.contains("# keep this comment"));
         assert_eq!(stored.contains("OTHER=encrypted:v1:"), unmarked);
         assert_eq!(stored.contains("MARKED=encrypted:v1:"), !unmarked);
         for (key, value) in [("MARKED", "marked-value"), ("OTHER", "other-value")] {
-            let output = p.run(&["-e", path(&file), "get", key]);
+            let output = p.run(&["manage", "get", "-e", path(&file), key]);
             success(&output);
             assert_eq!(text(&output), format!("{value}\n"));
         }
-        success(&p.run(&["-e", path(&file), "encrypt"]));
+        success(&p.run(&["manage", "enc", "-e", path(&file)]));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), stored);
     }
 }
@@ -765,68 +964,74 @@ fn bulk_encryption_respects_modes_and_is_idempotent() {
 fn bulk_globs_round_trip_and_decrypt_requires_explicit_selection() {
     let p = Project::new();
     let file = p.fixture("", "# @localenvx-mode:whitelist\nAPI_TOKEN=secret-one\nDB_TOKEN=secret-two\nPUBLIC=visible\nEMPTY=\n");
-    success(&p.run(&["-e", path(&file), "encrypt", "-k", "*_TOKEN", "-k", "EMPTY"]));
+    success(&p.run(&[
+        "manage",
+        "enc",
+        "-e",
+        path(&file),
+        "-k",
+        "*_TOKEN",
+        "-k",
+        "EMPTY",
+    ]));
     let encrypted = std::fs::read(&file).unwrap();
     let stored = String::from_utf8_lossy(&encrypted);
     assert_eq!(stored.matches("encrypted:v1:").count(), 3);
     assert!(!stored.contains("secret-one"));
     assert!(!stored.contains("secret-two"));
     assert!(stored.contains("PUBLIC=visible"));
-    failure(&p.run(&["-e", path(&file), "decrypt"]), "explicit -k");
+    failure(&p.run(&["manage", "dec", "-e", path(&file)]), "explicit -k");
     assert_eq!(std::fs::read(&file).unwrap(), encrypted);
-    success(&p.run(&["-e", path(&file), "decrypt", "-k", "API_*"]));
+    success(&p.run(&["manage", "dec", "-e", path(&file), "-k", "API_*"]));
     let stored = std::fs::read_to_string(&file).unwrap();
     assert!(stored.contains("API_TOKEN=secret-one"));
     assert!(stored.contains("DB_TOKEN=encrypted:v1:"));
-    success(&p.run(&["-e", path(&file), "decrypt", "-k", "*"]));
+    success(&p.run(&["manage", "dec", "-e", path(&file), "-k", "*"]));
     let plain = std::fs::read(&file).unwrap();
     assert!(!String::from_utf8_lossy(&plain).contains("encrypted:v1:"));
-    success(&p.run(&["-e", path(&file), "encrypt"]));
+    success(&p.run(&["manage", "enc", "-e", path(&file)]));
     assert_eq!(
         std::fs::read(&file).unwrap(),
         plain,
         "decrypted keys must remain plaintext by policy"
     );
-    success(&p.run(&["-e", path(&file), "decrypt", "-k", "MISSING*"]));
+    success(&p.run(&["manage", "dec", "-e", path(&file), "-k", "MISSING*"]));
     assert_eq!(std::fs::read(&file).unwrap(), plain);
-    let output = p.run(&["-e", path(&file), "get", "EMPTY"]);
+    let output = p.run(&["manage", "get", "-e", path(&file), "EMPTY"]);
     success(&output);
     assert_eq!(text(&output), "\n");
 }
 
 #[test]
-fn failed_decryption_and_rotation_preserve_files_and_config() {
+fn failed_decryption_preserves_files_and_config() {
     let p = Project::new();
     let first = p.fixture("first", "A=synthetic-secret\n");
-    success(&p.run(&["-e", path(&first), "encrypt"]));
+    success(&p.run(&["manage", "enc", "-e", path(&first)]));
     let good = std::fs::read(&first).unwrap();
     let config = std::fs::read(p.0.join("config.toml")).unwrap();
-    let mut command = p.command();
-    command.env("LOCALENVX_PASSWORD", "wrong-password").args([
-        "-e",
-        path(&first),
-        "decrypt",
-        "-k",
-        "*",
-    ]);
-    assert!(!command.output().unwrap().status.success());
-    assert_eq!(std::fs::read(&first).unwrap(), good);
-    let bad = p.fixture("bad", "B=encrypted:v1:invalid\n");
-    let corrupt = std::fs::read(&bad).unwrap();
-    assert!(
-        !p.run(&["-e", path(&first), "-e", path(&bad), "passwd"])
-            .status
-            .success()
+    let wrong = p.0.join("wrong.toml");
+    success(&p.run(&["manage", "init", "--config-file", path(&wrong)]));
+    failure(
+        &p.run(&[
+            "manage",
+            "dec",
+            "--config-file",
+            path(&wrong),
+            "-e",
+            path(&first),
+            "-k",
+            "*",
+        ]),
+        "decryption failed",
     );
     assert_eq!(std::fs::read(&first).unwrap(), good);
-    assert_eq!(std::fs::read(&bad).unwrap(), corrupt);
     assert_eq!(std::fs::read(p.0.join("config.toml")).unwrap(), config);
     // Even a successfully decrypted earlier key must not be saved on later failure.
     let mut mixed = good.clone();
     mixed.extend_from_slice(b"B=encrypted:v1:invalid\n");
     std::fs::write(&first, &mixed).unwrap();
     assert!(
-        !p.run(&["-e", path(&first), "decrypt", "-k", "*"])
+        !p.run(&["manage", "dec", "-e", path(&first), "-k", "*"])
             .status
             .success()
     );
@@ -839,7 +1044,7 @@ fn list_never_decrypts_or_prints_values_and_lists_each_file() {
     let first = p.fixture("first", "# @localenvx-mode:whitelist\nPLAIN=synthetic-private-value\nSECRET=encrypted:v1:synthetic-corrupt-ciphertext\n");
     let second = p.fixture("second", "OTHER=another-private-value\n");
     std::fs::remove_file(p.0.join("config.toml")).unwrap();
-    let output = p.run(&["-e", path(&first), "-e", path(&second), "list"]);
+    let output = p.run(&["manage", "ls", "-e", path(&first), "-e", path(&second)]);
     success(&output);
     let report = text(&output);
     for expected in [
@@ -863,7 +1068,7 @@ fn list_never_decrypts_or_prints_values_and_lists_each_file() {
         assert!(!report.contains(secret), "{report}");
     }
     assert!(output.stderr.is_empty());
-    assert!(!p.run(&["-e", "missing", "list"]).status.success());
+    assert!(!p.run(&["manage", "ls", "-e", "missing"]).status.success());
 }
 
 #[test]
@@ -871,12 +1076,21 @@ fn stdin_values_unicode_paths_and_literal_values_round_trip() {
     let p = Project::new();
     let file = p.fixture("spaces and 中文", "# preserved\n");
     let mut command = p.command();
-    command.args(["-e", path(&file), "set", "SECRET", "--stdin", "--enc", "-y"]);
+    command.args([
+        "manage",
+        "set",
+        "-e",
+        path(&file),
+        "SECRET",
+        "--stdin",
+        "--enc",
+        "-y",
+    ]);
     success(&input(
         command,
         "中文 value with = and # and 'quotes'\r\n".as_bytes(),
     ));
-    let output = p.run(&["-e", path(&file), "get", "SECRET"]);
+    let output = p.run(&["manage", "get", "-e", path(&file), "SECRET"]);
     success(&output);
     assert_eq!(text(&output), "中文 value with = and # and 'quotes'\n");
     assert!(
@@ -886,16 +1100,20 @@ fn stdin_values_unicode_paths_and_literal_values_round_trip() {
     );
     let mut command = p.command();
     command.args([
+        "manage",
+        "set",
         "-e",
         path(&file),
-        "set",
         "EMPTY",
         "--stdin",
         "--plain",
         "-y",
     ]);
     success(&input(command, b""));
-    assert_eq!(text(&p.run(&["-e", path(&file), "get", "EMPTY"])), "\n");
+    assert_eq!(
+        text(&p.run(&["manage", "get", "-e", path(&file), "EMPTY"])),
+        "\n"
+    );
     assert!(
         std::fs::read_to_string(&file)
             .unwrap()
@@ -908,23 +1126,22 @@ fn invalid_set_arguments_never_modify_files() {
     let p = Project::new();
     let file = p.fixture("", "A=original\n");
     for (args, message) in [
-        (vec!["set", "A"], "missing VALUE"),
+        (vec!["manage", "set", "A"], "missing VALUE"),
         (
-            vec!["set", "A", "value", "--stdin", "-y"],
+            vec!["manage", "set", "A", "value", "--stdin", "-y"],
             "mutually exclusive",
         ),
         (
-            vec!["set", "A", "value", "--plain", "--enc", "-y"],
+            vec!["manage", "set", "A", "value", "--plain", "--enc", "-y"],
             "cannot be used",
         ),
-        (vec!["set", "A", "--stdin", "--plain"], "pass -y"),
-        (vec!["rm", "MISSING", "-y"], "no variable named"),
-        (vec!["get", "MISSING"], "no variable named"),
+        (vec!["manage", "set", "A", "--stdin", "--plain"], "pass -y"),
+        (vec!["manage", "get", "MISSING"], "no variable named"),
     ] {
         let output = p
             .command()
-            .args(["-e", path(&file)])
             .args(args)
+            .args(["-e", path(&file)])
             .output()
             .unwrap();
         failure(&output, message);
@@ -933,31 +1150,63 @@ fn invalid_set_arguments_never_modify_files() {
 }
 
 #[test]
-fn password_stdin_overrides_environment_and_config() {
+fn passwords_and_rotation_are_removed_and_environment_cannot_change_key() {
     let p = Project::new();
     let file = p.fixture("", "A=secret\n");
-    success(&p.run(&["-e", path(&file), "encrypt"]));
-    let original = std::fs::read(&file).unwrap();
-    let mut command = p.command();
-    command.env("LOCALENVX_PASSWORD", "wrong-password").args([
-        "--password-stdin",
-        "-e",
-        path(&file),
-        "get",
-        "A",
-    ]);
-    let output = input(command, b"synthetic-test-password\r\n");
-    success(&output);
-    assert_eq!(text(&output), "secret\n");
-    for password in [b"wrong-password\n".as_slice(), b"\n".as_slice()] {
-        let mut command = p.command();
-        command.args(["--password-stdin", "-e", path(&file), "get", "A"]);
-        let output = input(command, password);
-        assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
-        assert!(!String::from_utf8_lossy(&output.stderr).contains("synthetic-test-password"));
+    success(&p.run(&["manage", "enc", "-e", path(&file)]));
+    let ciphertext = std::fs::read(&file).unwrap();
+    let credentials = std::fs::read(p.0.join("config.toml")).unwrap();
+    for value in ["", "wrong-password"] {
+        let output = p
+            .command()
+            .env("LOCALENVX_PASSWORD", value)
+            .args(["manage", "get", "-e", path(&file), "A"])
+            .output()
+            .unwrap();
+        success(&output);
+        assert_eq!(text(&output), "secret\n");
     }
-    assert_eq!(std::fs::read(&file).unwrap(), original);
+    for args in [
+        vec!["manage", "passwd"],
+        vec!["manage", "get", "--password-stdin", "A"],
+        vec!["manage", "init", "--no-store"],
+    ] {
+        assert!(!p.run(&args).status.success());
+    }
+    assert_eq!(std::fs::read(&file).unwrap(), ciphertext);
+    assert_eq!(std::fs::read(p.0.join("config.toml")).unwrap(), credentials);
+}
+
+#[test]
+fn legacy_and_invalid_credentials_are_rejected_without_leaking_or_changing_them() {
+    let p = Project::new();
+    let file = p.fixture("", "A=secret\n");
+    for (config, expected) in [
+        (
+            "version = 1\npassword = 'synthetic-legacy-secret'\n",
+            "legacy password-based credential file",
+        ),
+        (
+            "version = 2\nkey = 'synthetic-invalid-secret'\n",
+            "credential key",
+        ),
+        (
+            "version = 2\nkey = 'synthetic-parse-secret' broken\n",
+            "failed to parse",
+        ),
+        ("version = 99\n", "unsupported config version"),
+    ] {
+        std::fs::write(p.0.join("config.toml"), config).unwrap();
+        let output = p.run(&["manage", "get", "-e", path(&file), "A"]);
+        failure(&output, expected);
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("synthetic-"));
+        failure(&p.run(&["manage", "init"]), "already exists");
+        assert_eq!(
+            std::fs::read_to_string(p.0.join("config.toml")).unwrap(),
+            config
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "A=secret\n");
+    }
 }
 
 #[test]
@@ -965,13 +1214,22 @@ fn bulk_commands_reject_multiple_files_and_missing_files() {
     let p = Project::new();
     let first = p.fixture("first", "A=original\n");
     let second = p.fixture("second", "B=other\n");
-    for command in ["encrypt", "decrypt"] {
+    for command in ["enc", "dec"] {
         failure(
-            &p.run(&["-e", path(&first), "-e", path(&second), command, "-k", "*"]),
+            &p.run(&[
+                "manage",
+                command,
+                "-e",
+                path(&first),
+                "-e",
+                path(&second),
+                "-k",
+                "*",
+            ]),
             "single -e file",
         );
         assert!(
-            !p.run(&["-e", "missing", command, "-k", "*"])
+            !p.run(&["manage", command, "-e", "missing", "-k", "*"])
                 .status
                 .success()
         );
@@ -984,21 +1242,23 @@ fn bulk_commands_reject_multiple_files_and_missing_files() {
 fn native_child_receives_decrypted_environment_on_every_platform() {
     let p = Project::new();
     let file = p.fixture("", "SECRET=child-secret\n");
-    success(&p.run(&["-e", path(&file), "encrypt"]));
+    success(&p.run(&["manage", "enc", "-e", path(&file)]));
     for entry in [vec!["run", "--"], vec!["--"], vec![]] {
         let output = p
             .command()
+            .args(entry.first().filter(|x| **x == "run"))
             .args(["-e", path(&file)])
-            .args(entry)
+            .args(entry.iter().filter(|x| **x != "run"))
             .args([
                 env!("CARGO_BIN_EXE_localenvx"),
+                "manage",
+                "get",
                 "--config-file",
                 path(&p.0.join("config.toml")),
                 "-e",
                 path(&file),
                 "-v",
                 "SECRET=child-override",
-                "get",
                 "SECRET",
             ])
             .output()
@@ -1008,211 +1268,20 @@ fn native_child_receives_decrypted_environment_on_every_platform() {
         // An empty file ensures the nested CLI can only get SECRET by inheritance.
         let empty = p.fixture("empty-child", "");
         let output = p.run(&[
+            "run",
             "-e",
             path(&file),
-            "run",
             "--",
             env!("CARGO_BIN_EXE_localenvx"),
+            "manage",
+            "get",
             "--config-file",
             path(&p.0.join("config.toml")),
             "-e",
             path(&empty),
-            "get",
             "SECRET",
         ]);
         success(&output);
         assert_eq!(text(&output), "child-secret\n");
     }
-}
-
-// Give rpassword a controlling terminal and answer each prompt only after it appears.
-// A deadline prevents a broken prompt from hanging CI indefinitely.
-#[cfg(unix)]
-fn terminal_passwords(mut command: Command, answers: &[(&str, &str)]) -> Output {
-    use std::fs::File;
-    use std::io::{Read, Write};
-    use std::os::fd::{AsRawFd, FromRawFd};
-    use std::os::unix::process::CommandExt;
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-    let mut master = -1;
-    let mut slave = -1;
-    assert_eq!(
-        unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        },
-        0
-    );
-    let mut master = unsafe { File::from_raw_fd(master) };
-    let slave = unsafe { File::from_raw_fd(slave) };
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-        let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
-        assert_ne!(flags, -1);
-        assert_ne!(
-            libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK),
-            -1
-        );
-    }
-    let mut child = command
-        .stdin(Stdio::from(slave))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut transcript = String::new();
-    let mut next = 0;
-    loop {
-        let mut buf = [0u8; 1024];
-        if let Ok(n) = master.read(&mut buf) {
-            transcript.push_str(&String::from_utf8_lossy(&buf[..n]));
-        }
-        if next < answers.len() && transcript.contains(answers[next].0) {
-            master
-                .write_all(format!("{}\n", answers[next].1).as_bytes())
-                .unwrap();
-            transcript.clear();
-            next += 1;
-        }
-        if child.try_wait().unwrap().is_some() {
-            break;
-        }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            let output = child.wait_with_output().unwrap();
-            panic!(
-                "password interaction timed out at prompt {next}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let output = child.wait_with_output().unwrap();
-    assert_eq!(
-        next,
-        answers.len(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output
-}
-
-#[cfg(windows)]
-fn terminal_passwords(command: Command, answers: &[(&str, &str)]) -> Output {
-    let argv: Vec<_> = std::iter::once(command.get_program())
-        .chain(command.get_args())
-        .map(|arg| arg.to_str().unwrap())
-        .collect();
-    let env: Vec<_> = command
-        .get_envs()
-        .map(|(key, value)| (key.to_str().unwrap(), value.map(|v| v.to_str().unwrap())))
-        .collect();
-    let spec = serde_json::json!({
-        "argv": argv,
-        "cwd": command.get_current_dir().unwrap().to_str().unwrap(),
-        "env": env,
-        "answers": answers,
-    });
-    Command::new(std::env::var_os("LOCALENVX_TEST_PYTHON").unwrap_or_else(|| "python".into()))
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/windows_terminal.py"
-        ))
-        .arg(spec.to_string())
-        .output()
-        .expect("Windows terminal tests require Python and pywinpty (installed by CI)")
-}
-
-#[test]
-fn password_rotation_reencrypts_multiple_files_and_supports_no_store() {
-    let p = Project::new();
-    let first = p.fixture("first", "A=first-secret\nPUBLIC=visible\n");
-    let second = p.fixture("second", "B=second-secret\n");
-    success(&p.run(&["-e", path(&first), "encrypt", "-k", "A"]));
-    success(&p.run(&["-e", path(&second), "encrypt"]));
-    for no_store in [false, true] {
-        let before = std::fs::read(&first).unwrap();
-        let mut command = p.command();
-        command.args(["-e", path(&first), "-e", path(&second), "passwd"]);
-        if no_store {
-            command.arg("--no-store");
-        }
-        let output = terminal_passwords(
-            command,
-            &[
-                ("new password: ", "rotated-password"),
-                ("repeat password: ", "rotated-password"),
-            ],
-        );
-        success(&output);
-        assert_ne!(std::fs::read(&first).unwrap(), before);
-        let config: toml::Value = std::fs::read_to_string(p.0.join("config.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(
-            config.get("password").and_then(toml::Value::as_str),
-            (!no_store).then_some("rotated-password")
-        );
-        for (file, key, value) in [
-            (&first, "A", "first-secret"),
-            (&second, "B", "second-secret"),
-        ] {
-            let output = p
-                .command()
-                .env("LOCALENVX_PASSWORD", "rotated-password")
-                .args(["-e", path(file), "get", key])
-                .output()
-                .unwrap();
-            success(&output);
-            assert_eq!(text(&output), format!("{value}\n"));
-            let output = p
-                .command()
-                .env("LOCALENVX_PASSWORD", "synthetic-test-password")
-                .args(["-e", path(file), "get", key])
-                .output()
-                .unwrap();
-            assert!(!output.status.success());
-        }
-        assert!(
-            std::fs::read_to_string(&first)
-                .unwrap()
-                .contains("PUBLIC=visible")
-        );
-    }
-}
-
-#[test]
-fn mismatched_new_password_leaves_config_and_ciphertext_unchanged() {
-    let p = Project::new();
-    let file = p.fixture("", "A=secret\n");
-    success(&p.run(&["-e", path(&file), "encrypt"]));
-    let original = std::fs::read(&file).unwrap();
-    let config = std::fs::read(p.0.join("config.toml")).unwrap();
-    let mut command = p.command();
-    command.args(["-e", path(&file), "passwd"]);
-    failure(
-        &terminal_passwords(
-            command,
-            &[
-                ("new password: ", "one-password"),
-                ("repeat password: ", "another-password"),
-            ],
-        ),
-        "do not match",
-    );
-    assert_eq!(std::fs::read(&file).unwrap(), original);
-    assert_eq!(std::fs::read(p.0.join("config.toml")).unwrap(), config);
 }

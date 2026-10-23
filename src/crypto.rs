@@ -1,6 +1,4 @@
-//! Key derivation and value-level encryption.
-//!
-//! password ──argon2id(salt)──▶ key ──XChaCha20-Poly1305──▶ values in .env
+//! Random file credentials and value-level encryption.
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
@@ -11,9 +9,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub const PREFIX: &str = "encrypted:v1:";
 const NONCE_LEN: usize = 24;
-const SALT_LEN: usize = 16;
 
-/// The derived symmetric key, wiped on drop.
+/// The symmetric key, wiped on drop.
 pub struct Key([u8; 32]);
 
 impl Drop for Key {
@@ -22,21 +19,27 @@ impl Drop for Key {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct KdfParams {
-    pub m: u32,
-    pub t: u32,
-    pub p: u32,
-}
+impl Key {
+    pub fn generate() -> Result<Self> {
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).map_err(|e| anyhow!("failed to get random bytes: {e}"))?;
+        Ok(Self(bytes))
+    }
 
-impl Default for KdfParams {
-    fn default() -> Self {
-        // m=64MB/t=3 costs ~80ms on this machine, within the <100ms startup budget.
-        Self {
-            m: 65536,
-            t: 3,
-            p: 4,
-        }
+    pub fn from_base64(encoded: &str) -> Result<Self> {
+        let bytes = Zeroizing::new(
+            B64.decode(encoded)
+                .map_err(|_| anyhow!("credential key is not valid base64"))?,
+        );
+        let key: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("credential key must contain exactly 32 bytes"))?;
+        Ok(Self(key))
+    }
+
+    pub fn to_base64(&self) -> String {
+        B64.encode(self.0)
     }
 }
 
@@ -44,29 +47,6 @@ pub fn random_bytes(n: usize) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; n];
     getrandom::fill(&mut buf).map_err(|e| anyhow!("failed to get random bytes: {e}"))?;
     Ok(buf)
-}
-
-pub fn new_salt_b64() -> Result<String> {
-    Ok(B64.encode(random_bytes(SALT_LEN)?))
-}
-
-pub fn derive_key(password: &str, salt_b64: &str, p: KdfParams) -> Result<Key> {
-    use argon2::{Algorithm, Argon2, Params, Version};
-
-    let salt = B64
-        .decode(salt_b64.trim())
-        .context("kdf.salt in the config is not valid base64")?;
-    if salt.len() < 8 {
-        bail!("kdf.salt is too short (8 bytes minimum)");
-    }
-    let params = Params::new(p.m, p.t, p.p, Some(32))
-        .map_err(|e| anyhow!("invalid argon2 parameters: {e}"))?;
-    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut key = [0u8; 32];
-    argon
-        .hash_password_into(password.as_bytes(), &salt, &mut key)
-        .map_err(|e| anyhow!("key derivation failed: {e}"))?;
-    Ok(Key(key))
 }
 
 pub fn is_encrypted(value: &str) -> bool {
@@ -113,7 +93,7 @@ pub fn decrypt(key: &Key, name: &str, value: &str) -> Result<Zeroizing<String>> 
                 aad: name.as_bytes(),
             },
         )
-        .map_err(|_| anyhow!("{name}: decryption failed (wrong password, corrupted ciphertext, or the variable was renamed)"))?;
+        .map_err(|_| anyhow!("{name}: decryption failed (wrong credential file, corrupted ciphertext, or the variable was renamed)"))?;
     let s = String::from_utf8(pt).map_err(|e| {
         let mut bytes = e.into_bytes();
         bytes.zeroize();
@@ -127,12 +107,7 @@ mod tests {
     use super::*;
 
     fn key() -> Key {
-        derive_key(
-            "pw",
-            &new_salt_b64().unwrap(),
-            KdfParams { m: 8, t: 1, p: 1 },
-        )
-        .unwrap()
+        Key::generate().unwrap()
     }
 
     #[test]
@@ -151,12 +126,21 @@ mod tests {
     }
 
     #[test]
-    fn wrong_password_fails() {
-        let salt = new_salt_b64().unwrap();
-        let p = KdfParams { m: 8, t: 1, p: 1 };
-        let a = derive_key("pw", &salt, p).unwrap();
-        let b = derive_key("nope", &salt, p).unwrap();
+    fn wrong_key_fails() {
+        let a = key();
+        let b = key();
         let c = encrypt(&a, "K", "v").unwrap();
         assert!(decrypt(&b, "K", &c).is_err());
+    }
+
+    #[test]
+    fn credential_roundtrip_and_validation() {
+        let a = key();
+        let b = Key::from_base64(&a.to_base64()).unwrap();
+        let c = encrypt(&a, "K", "v").unwrap();
+        assert_eq!(&*decrypt(&b, "K", &c).unwrap(), "v");
+        for input in ["", "invalid", "c2hvcnQ="] {
+            assert!(Key::from_base64(input).is_err());
+        }
     }
 }

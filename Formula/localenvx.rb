@@ -1,7 +1,7 @@
 class Localenvx < Formula
-  desc "dotenv-cli-like usage. dotenvx-style encryption. A local encrypted .env manager."
+  desc "A local encrypted .env manager."
   homepage "https://github.com/ctxinf/localenvx"
-  url "https://github.com/ctxinf/localenvx.git", tag: "v0.4.2"
+  url "https://github.com/ctxinf/localenvx.git", tag: "v0.5.0"
   license "MIT"
   head "https://github.com/ctxinf/localenvx.git", branch: "main"
 
@@ -13,6 +13,6 @@ class Localenvx < Formula
 
   test do
     assert_match "localenvx", shell_output("#{bin}/localenvx --version")
-    assert_match "localenvx usage guide", shell_output("#{bin}/localenvx skill")
+    assert_match "localenvx usage guide", shell_output("#{bin}/localenvx --skill")
   end
 end

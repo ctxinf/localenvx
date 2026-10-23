@@ -12,7 +12,7 @@ mod ui;
 #[cfg(not(unix))]
 use anyhow::Context;
 use anyhow::{Result, bail};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -23,98 +23,145 @@ use crate::term::{cyan, dim, green, note, yellow};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
-#[command(
-    name = "localenvx",
-    bin_name = "localenvx",
-    version,
-    disable_help_subcommand = true,
-    about = "dotenv-cli-like usage. dotenvx-style encryption. A local encrypted .env manager.",
-    long_about = "No plaintext secrets on disk: sensitive values in .env are stored as XChaCha20-Poly1305\nciphertext, decrypted only during `localenvx run` and passed to the child process via environ."
-)]
+#[command(name = "localenvx", bin_name = "localenvx", version,
+    disable_help_subcommand = true, args_conflicts_with_subcommands = true, about = env!("CARGO_PKG_DESCRIPTION"),
+    help_template = "{about}\n\n{before-help}{usage-heading} {usage}\n\nExamples:\n  localenvx -- node app.js\n  localenvx run -e .env.test -- node app.js\n  localenvx manage get -e .env API_TOKEN\n\n{all-args}{after-help}")]
 struct Cli {
-    /// Read the password from stdin (highest precedence)
-    #[arg(long, global = true)]
-    password_stdin: bool,
-    /// Credential config path (overrides user and project credentials)
-    #[arg(long, global = true, conflicts_with = "project")]
-    config_file: Option<PathBuf>,
-    /// Use credentials in the current directory's .localenvx/config.toml
-    #[arg(long, global = true)]
-    project: bool,
-    /// Silence summaries (run/get default to true); use --quiet=false for details
-    #[arg(long, short, global = true, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    quiet: Option<bool>,
-    #[command(flatten)]
-    env: EnvArgs,
+    /// Print the bundled usage guide
+    #[arg(long, exclusive = true)]
+    skill: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
 
+#[derive(Args, Default)]
+struct Credentials {
+    /// Credential config path. Default: nearest .localenvx/config.toml from the current directory upward, then user config (LOCALENVX_CONFIG_DIR > XDG_CONFIG_HOME/localenvx > ~/.config/localenvx on Unix or %APPDATA%/localenvx on Windows). Init defaults to user config.
+    #[arg(long)]
+    config_file: Option<PathBuf>,
+    /// Silence summaries; use --quiet=false for details
+    #[arg(long, short, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    quiet: Option<bool>,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
-    /// Show commands and options (equivalent to --help)
-    Help,
-    /// Print the bundled usage guide for people and agents
-    Skill,
-    /// Show credential and environment-file status without revealing values
-    Status,
-    #[command(external_subcommand)]
-    External(Vec<OsString>),
-    /// Generate a salt, set the password and write the config
-    Init(InitArgs),
-    /// Load .env and exec the child process (no shell involved)
-    Run(RunArgs),
-    /// Write a variable (the file mode decides whether it is encrypted)
-    Set(SetArgs),
-    /// Print a single variable's value to stdout
-    Get(GetArgs),
-    /// List key names and encryption status (never values)
-    #[command(visible_alias = "ls")]
-    List(ListArgs),
-    /// Remove a variable
-    Rm(RmArgs),
-    /// Bulk-encrypt existing plaintext values
-    #[command(visible_alias = "enc")]
-    Encrypt(BulkArgs),
-    /// Decrypt to plaintext (careful: plaintext lands on disk)
-    #[command(visible_alias = "dec")]
-    Decrypt(BulkArgs),
-    /// Change the password and re-encrypt the given files with it
-    Passwd(PasswdArgs),
-    /// Local web UI (127.0.0.1, foreground process, Ctrl-C to quit)
-    Ui(UiArgs),
+    /// Load .env and run a command (the run keyword is optional)
+    Run(RunEntry),
+    /// Manage credentials and environment files
+    #[command(subcommand)]
+    Manage(ManageCmd),
 }
 
 #[derive(Args)]
-struct InitArgs {
-    /// Do not store the password in the config (use LOCALENVX_PASSWORD or type it each time)
+struct RunEntry {
+    #[command(flatten)]
+    credentials: Credentials,
+    #[command(flatten)]
+    env: EnvArgs,
+    #[command(flatten)]
+    args: RunArgs,
+}
+
+#[derive(Args, Default)]
+struct Files {
+    /// Env files (repeatable); defaults to .env
+    #[arg(short = 'e')]
+    files: Vec<PathBuf>,
+}
+
+macro_rules! entry {
+    ($name:ident, $args:ty, $env:ty) => {
+        #[derive(Args)]
+        struct $name {
+            #[command(flatten)]
+            credentials: Credentials,
+            #[command(flatten)]
+            env: $env,
+            #[command(flatten)]
+            args: $args,
+        }
+    };
+}
+#[derive(Args)]
+struct InitEntry {
+    #[command(flatten)]
+    credentials: Credentials,
+}
+entry!(SetEntry, SetArgs, Files);
+entry!(GetEntry, GetArgs, ReadArgs);
+entry!(ListEntry, ListArgs, Files);
+entry!(BulkEntry, BulkArgs, Files);
+entry!(UiEntry, UiArgs, EmptyArgs);
+
+#[derive(Args, Default)]
+struct EmptyArgs {}
+
+#[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
+enum ManageCmd {
+    /// Show credential and environment-file status
+    Status,
+    /// Generate a random credential key file
+    Init(InitEntry),
+    /// Write a variable
+    Set(SetEntry),
+    /// Print a variable's value
+    Get(GetEntry),
+    /// List key names and encryption status
+    Ls(ListEntry),
+    /// Encrypt plaintext values
+    Enc(BulkEntry),
+    /// Decrypt values to plaintext on disk
+    Dec(BulkEntry),
+    /// Open the local web UI
+    Ui(UiEntry),
+}
+
+#[derive(Args, Default, Clone)]
+struct ReadArgs {
+    /// Env files (repeatable); defaults to .env
+    #[arg(short = 'e')]
+    files: Vec<PathBuf>,
+    /// Override the process environment and let later files win
+    #[arg(short = 'o', long = "override")]
+    r#override: bool,
+    /// Cascade candidates: environment.local, local, environment, base
+    #[arg(short = 'c', num_args = 0..=1, default_missing_value = "", conflicts_with = "override")]
+    cascade: Option<String>,
+    /// Temporary NAME=value (repeatable, applied last without expansion)
+    #[arg(short = 'v', value_parser = parse_variable)]
+    variables: Vec<(String, String)>,
+    /// Leave variable references literal
     #[arg(long)]
-    no_store: bool,
-    /// Overwrite an existing config (old ciphertext becomes undecryptable)
-    #[arg(long)]
-    force: bool,
+    no_expand: bool,
 }
 
 #[derive(Args, Default)]
 struct EnvArgs {
-    /// Env files (repeatable); defaults to .env
-    #[arg(short = 'e', global = true)]
-    files: Vec<PathBuf>,
-    /// Override the process environment and let later files win
-    #[arg(short = 'o', long = "override", global = true)]
-    r#override: bool,
-    /// Cascade candidates: environment.local, local, environment, base
-    #[arg(short = 'c', global = true, num_args = 0..=1, default_missing_value = "", conflicts_with = "override")]
-    cascade: Option<String>,
-    /// Temporary NAME=value (repeatable, applied last without expansion)
-    #[arg(short = 'v', global = true, value_parser = parse_variable)]
-    variables: Vec<(String, String)>,
+    #[command(flatten)]
+    read: ReadArgs,
     /// Print planned paths and temporary values without reading files or running
-    #[arg(long, global = true)]
+    #[arg(long)]
     debug: bool,
-    /// Leave variable references literal
-    #[arg(long, global = true)]
-    no_expand: bool,
+}
+
+impl std::ops::Deref for EnvArgs {
+    type Target = ReadArgs;
+    fn deref(&self) -> &ReadArgs {
+        &self.read
+    }
+}
+impl From<&Files> for EnvArgs {
+    fn from(files: &Files) -> Self {
+        Self {
+            read: ReadArgs {
+                files: files.files.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 }
 
 fn parse_variable(input: &str) -> std::result::Result<(String, String), String> {
@@ -131,7 +178,7 @@ fn parse_variable(input: &str) -> std::result::Result<(String, String), String> 
 #[derive(Args)]
 struct RunArgs {
     /// Command and arguments, optionally preceded by --
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(trailing_var_arg = true)]
     cmd: Vec<OsString>,
 }
 
@@ -162,25 +209,10 @@ struct GetArgs {
 struct ListArgs {}
 
 #[derive(Args)]
-struct RmArgs {
-    name: String,
-    /// Skip the removal confirmation
-    #[arg(short = 'y', long)]
-    yes: bool,
-}
-
-#[derive(Args)]
 struct BulkArgs {
     /// Variable name or glob, repeatable; encrypt defaults to "every variable this file's mode says should be encrypted" (all of them under blacklist)
     #[arg(short = 'k', long = "key")]
     keys: Vec<String>,
-}
-
-#[derive(Args)]
-struct PasswdArgs {
-    /// Do not store the new password in the config
-    #[arg(long)]
-    no_store: bool,
 }
 
 #[derive(Args)]
@@ -193,18 +225,44 @@ struct UiArgs {
     strict_port: bool,
 }
 
+fn parse_cli() -> Cli {
+    let mut argv: Vec<OsString> = std::env::args_os().collect();
+    let root = Cli::command().before_help(format!("localenvx v{VERSION}"));
+    if argv.len() == 1 {
+        println!("localenvx v{VERSION} — use localenvx --help\nExample: localenvx -- node app.js");
+        std::process::exit(0);
+    }
+    if matches!(argv[1].to_str(), Some("--help" | "-h")) {
+        // Show runtime options at the root, without making them global.
+        RunEntry::augment_args(root).override_usage("localenvx [OPTIONS] [--] <COMMAND> [ARGS]...\n       localenvx run [OPTIONS] [--] <COMMAND> [ARGS]...\n       localenvx manage <COMMAND>").print_help().unwrap();
+        println!();
+        std::process::exit(0);
+    }
+    if !matches!(
+        argv[1].to_str(),
+        Some("run" | "manage" | "--skill" | "--version" | "-V")
+    ) {
+        argv.insert(1, "run".into());
+    }
+    let matches = root.get_matches_from(argv);
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+}
+
 fn main() {
-    let cli = Cli::parse();
-    let quiet_default = matches!(
-        cli.cmd,
-        Some(Cmd::Run(_) | Cmd::External(_) | Cmd::Get(_)) | None
-    );
-    let quiet = cli
+    let cli = parse_cli();
+    if let Err(e) = dispatch(&cli) {
+        eprintln!("{} {e:#}", term::paint("31;1", "error:"));
+        std::process::exit(1);
+    }
+}
+
+fn configure(c: &Credentials, init: bool, quiet_default: bool) -> Result<()> {
+    let quiet = c
         .quiet
         .or_else(|| {
             std::env::var("LOCALENVX_QUIET")
                 .ok()
-                .and_then(|value| match value.as_str() {
+                .and_then(|v| match v.as_str() {
                     "1" | "true" => Some(true),
                     "0" | "false" => Some(false),
                     _ => None,
@@ -212,67 +270,77 @@ fn main() {
         })
         .unwrap_or(quiet_default);
     term::set_quiet(quiet);
-    if let Err(e) = dispatch(&cli) {
-        eprintln!("{} {e:#}", term::paint("31;1", "error:"));
-        std::process::exit(1);
-    }
+    let selected = if c.config_file.is_none() && init {
+        Some(config::config_dir()?.join("config.toml"))
+    } else {
+        c.config_file.clone()
+    };
+    config::select_path(selected);
+    Ok(())
 }
 
 fn dispatch(cli: &Cli) -> Result<()> {
-    if matches!(cli.cmd, Some(Cmd::Help)) {
-        // Use the same parser path so formatting and global options match --help.
-        Cli::command()
-            .try_get_matches_from(["localenvx", "--help"])
-            .expect_err("--help returns DisplayHelp")
-            .print()?;
-        return Ok(());
-    }
-    if matches!(cli.cmd, Some(Cmd::Skill)) {
+    if cli.skill {
         print!("{}", include_str!("../SKILL.md"));
         return Ok(());
     }
-    if cli.env.debug {
-        println!(
-            "{}",
-            preview::format(
-                &load::planned_paths(&cli.env.files, cli.env.cascade.as_deref()),
-                &cli.env.variables
-            )
-        );
-        return Ok(());
-    }
-    let selected = if cli.project {
-        Some(std::env::current_dir()?.join(".localenvx/config.toml"))
-    } else if cli.config_file.is_none() && matches!(cli.cmd, Some(Cmd::Init(_))) {
-        // Initialization remains user-scoped unless a destination is explicit.
-        Some(config::config_dir()?.join("config.toml"))
-    } else {
-        cli.config_file.clone()
-    };
-    config::select_path(selected);
     match cli.cmd.as_ref() {
-        Some(Cmd::External(cmd)) => {
-            cmd_run(&RunArgs { cmd: cmd.clone() }, &cli.env, cli.password_stdin)
+        None => Ok(()),
+        Some(Cmd::Run(a)) => {
+            if a.env.debug {
+                println!(
+                    "{}",
+                    preview::format(
+                        &load::planned_paths(&a.env.files, a.env.cascade.as_deref()),
+                        &a.env.variables
+                    )
+                );
+                return Ok(());
+            }
+            configure(&a.credentials, false, true)?;
+            cmd_run(&a.args, &a.env)
         }
-        None => bail!("missing command; use localenvx --help or localenvx status"),
-        Some(Cmd::Help | Cmd::Skill) => unreachable!("help is handled before configuration"),
-        Some(Cmd::Status) => {
-            print!(
-                "{}",
-                status::format(&cli.env.files, cli.env.cascade.as_deref())
-            );
-            Ok(())
-        }
-        Some(Cmd::Init(a)) => cmd_init(a, cli.project),
-        Some(Cmd::Run(a)) => cmd_run(a, &cli.env, cli.password_stdin),
-        Some(Cmd::Set(a)) => cmd_set(a, &cli.env, cli.password_stdin),
-        Some(Cmd::Get(a)) => cmd_get(a, &cli.env, cli.password_stdin),
-        Some(Cmd::List(a)) => cmd_list(a, &cli.env),
-        Some(Cmd::Rm(a)) => cmd_rm(a, &cli.env),
-        Some(Cmd::Encrypt(a)) => cmd_encrypt(a, &cli.env, cli.password_stdin),
-        Some(Cmd::Decrypt(a)) => cmd_decrypt(a, &cli.env, cli.password_stdin),
-        Some(Cmd::Passwd(a)) => cmd_passwd(a, &cli.env),
-        Some(Cmd::Ui(a)) => ui::serve(a.port, a.strict_port, cli.password_stdin),
+        Some(Cmd::Manage(cmd)) => match cmd {
+            ManageCmd::Init(a) => {
+                configure(&a.credentials, true, false)?;
+                cmd_init()
+            }
+            ManageCmd::Status => {
+                config::select_path(None);
+                print!("{}", status::format(&[], None));
+                Ok(())
+            }
+            ManageCmd::Set(a) => {
+                configure(&a.credentials, false, false)?;
+                cmd_set(&a.args, &(&a.env).into())
+            }
+            ManageCmd::Get(a) => {
+                configure(&a.credentials, false, true)?;
+                cmd_get(
+                    &a.args,
+                    &EnvArgs {
+                        read: a.env.clone(),
+                        debug: false,
+                    },
+                )
+            }
+            ManageCmd::Ls(a) => {
+                configure(&a.credentials, false, false)?;
+                cmd_list(&a.args, &(&a.env).into())
+            }
+            ManageCmd::Enc(a) => {
+                configure(&a.credentials, false, false)?;
+                cmd_encrypt(&a.args, &(&a.env).into())
+            }
+            ManageCmd::Dec(a) => {
+                configure(&a.credentials, false, false)?;
+                cmd_decrypt(&a.args, &(&a.env).into())
+            }
+            ManageCmd::Ui(a) => {
+                configure(&a.credentials, false, false)?;
+                ui::serve(a.args.port, a.args.strict_port)
+            }
+        },
     }
 }
 
@@ -312,52 +380,41 @@ fn check_project_initialization(root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_init(a: &InitArgs, project: bool) -> Result<()> {
+fn cmd_init() -> Result<()> {
     let path = config::config_path()?;
-    if path.exists() && !a.force {
+    if path.exists() {
         bail!(
-            "{} already exists; pass --force to overwrite (old ciphertext becomes undecryptable)",
+            "{} already exists; existing credentials are never overwritten",
             path.display()
         );
     }
-    if project {
-        check_project_initialization(&std::env::current_dir()?)?;
+    // Explicit project paths retain the same initialization checks.
+    if let Some(dir) = path
+        .parent()
+        .filter(|dir| dir.file_name().is_some_and(|name| name == ".localenvx"))
+    {
+        let root = dir
+            .parent()
+            .filter(|root| !root.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        check_project_initialization(root)?;
     }
-    let pw = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        session::prompt_new_password()?
-    } else {
-        session::read_password_stdin()?
-    };
-    let salt = crypto::new_salt_b64()?;
-    let stored = (!a.no_store).then(|| pw.to_string());
-    let cfg = config::Config::new(salt, crypto::KdfParams::default(), stored);
+    let cfg = config::Config::new()?;
     let written = config::save(&cfg)?;
     note!(
         "{} {}",
         green("✓ initialized"),
         dim(&written.display().to_string())
     );
-    if a.no_store {
-        note!("  password not stored: use LOCALENVX_PASSWORD or type it interactively");
-    } else {
-        note!(
-            "  {}",
-            yellow(
-                "the password is stored in plaintext in the config (0600) — keep a copy in 1Password; if you forget it nothing can be recovered"
-            )
-        );
-    }
+    note!("  Back up this credential file; it is the key to your encrypted values.");
     Ok(())
 }
 
 // ── F2/F3/F4 run ─────────────────────────────────────────────────────────────
 
-fn runtime_environment(
-    env: &EnvArgs,
-    password_stdin: bool,
-) -> Result<Vec<(String, zeroize::Zeroizing<String>)>> {
+fn runtime_environment(env: &EnvArgs) -> Result<Vec<(String, zeroize::Zeroizing<String>)>> {
     let paths = load::planned_paths(&env.files, env.cascade.as_deref());
-    let mut sess = Session::open(password_stdin)?;
+    let mut sess = Session::open()?;
     let mut loaded = load::load_files(&paths, env.cascade.is_some(), env.r#override)?;
     let entries = load::resolve_environment(&mut sess, &mut loaded, &env.variables, env.no_expand)?;
     if env.cascade.is_some() && loaded.files.is_empty() {
@@ -373,11 +430,11 @@ fn runtime_environment(
     Ok(entries)
 }
 
-fn cmd_run(a: &RunArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+fn cmd_run(a: &RunArgs, env: &EnvArgs) -> Result<()> {
     if a.cmd.is_empty() {
         bail!("missing command after run");
     }
-    let entries = runtime_environment(env, password_stdin)?;
+    let entries = runtime_environment(env)?;
     let mut cmd = std::process::Command::new(&a.cmd[0]);
     cmd.args(&a.cmd[1..]);
     cmd.envs(entries.iter().map(|(key, value)| (key, value.as_str())));
@@ -452,7 +509,7 @@ fn open_or_new(path: &std::path::Path) -> Result<EnvFile> {
     }
 }
 
-fn cmd_set(a: &SetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+fn cmd_set(a: &SetArgs, env: &EnvArgs) -> Result<()> {
     let value = match (&a.value, a.stdin) {
         (Some(v), false) => v.clone(),
         (None, true) => {
@@ -485,7 +542,7 @@ fn cmd_set(a: &SetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
             );
         }
     }
-    if (a.stdin || password_stdin) && !a.yes {
+    if a.stdin && !a.yes {
         bail!("stdin is reserved for input; pass -y to confirm the write");
     }
     if !term::confirm("Write these files?", a.yes)? {
@@ -504,9 +561,9 @@ fn cmd_set(a: &SetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
         let encrypt = want_enc.unwrap_or_else(|| file.should_encrypt(&a.name));
         let stored = if encrypt {
             if sess.is_none() {
-                sess = Some(Session::open(password_stdin)?);
+                sess = Some(Session::open()?);
             }
-            crypto::encrypt(sess.as_mut().unwrap().key()?, &a.name, &value)?
+            crypto::encrypt(sess.as_mut().unwrap().key(), &a.name, &value)?
         } else {
             value.clone()
         };
@@ -537,8 +594,8 @@ fn edit_paths(env: &EnvArgs) -> Result<Vec<PathBuf>> {
     Ok(unique)
 }
 
-fn cmd_get(a: &GetArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
-    let entries = runtime_environment(env, password_stdin)?;
+fn cmd_get(a: &GetArgs, env: &EnvArgs) -> Result<()> {
+    let entries = runtime_environment(env)?;
     if let Some((_, value)) = entries.iter().find(|(key, _)| *key == a.name) {
         println!("{}", value.as_str());
     } else if let Some(value) = std::env::var_os(&a.name) {
@@ -573,40 +630,6 @@ fn cmd_list(_a: &ListArgs, env: &EnvArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_rm(a: &RmArgs, env: &EnvArgs) -> Result<()> {
-    let paths = edit_paths(env)?;
-    let mut files: Vec<_> = paths
-        .iter()
-        .map(|path| EnvFile::load(path))
-        .collect::<Result<_>>()?;
-    files.retain(|file| file.get(&a.name).is_some());
-    if files.is_empty() {
-        bail!("no variable named {} in the selected files", a.name);
-    }
-    for file in &mut files {
-        let count = file.vars().filter(|v| v.name == a.name).count();
-        if count == 0 {
-            continue;
-        }
-        eprintln!(
-            "remove {} from {} ({} occurrence(s))",
-            a.name,
-            file.path.display(),
-            count
-        );
-        file.remove(&a.name)?;
-        file.validate_render()?;
-    }
-    if !term::confirm("Remove from these files?", a.yes)? {
-        return Ok(());
-    }
-    for file in &files {
-        file.save()?;
-    }
-    note!("{} removed {}", green("✓"), a.name);
-    Ok(())
-}
-
 /// Pick, in file order, the variable names matching any of the globs.
 fn selected(file: &EnvFile, keys: &[String]) -> Vec<String> {
     file.vars()
@@ -615,7 +638,7 @@ fn selected(file: &EnvFile, keys: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn cmd_encrypt(a: &BulkArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+fn cmd_encrypt(a: &BulkArgs, env: &EnvArgs) -> Result<()> {
     let mut file = EnvFile::load(target_file(env)?)?;
     let names: Vec<String> = if a.keys.is_empty() {
         file.vars()
@@ -646,10 +669,10 @@ fn cmd_encrypt(a: &BulkArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> 
         }
         return Ok(());
     }
-    let mut sess = Session::open(password_stdin)?;
+    let sess = Session::open()?;
     for name in &names {
         let plain = file.get(name).unwrap().value.clone();
-        let ct = crypto::encrypt(sess.key()?, name, &plain)?;
+        let ct = crypto::encrypt(sess.key(), name, &plain)?;
         file.set_value(name, &ct)?;
         if !a.keys.is_empty() {
             file.apply_directive(name, true)?;
@@ -665,7 +688,7 @@ fn cmd_encrypt(a: &BulkArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> 
     Ok(())
 }
 
-fn cmd_decrypt(a: &BulkArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> {
+fn cmd_decrypt(a: &BulkArgs, env: &EnvArgs) -> Result<()> {
     if a.keys.is_empty() {
         bail!(
             "decrypt requires an explicit -k (plaintext lands on disk, so there is no bulk default)"
@@ -680,10 +703,10 @@ fn cmd_decrypt(a: &BulkArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> 
         note!("{} no encrypted variable matched", dim("·"));
         return Ok(());
     }
-    let mut sess = Session::open(password_stdin)?;
+    let sess = Session::open()?;
     for name in &names {
         let ct = file.get(name).unwrap().value.clone();
-        let pt = crypto::decrypt(sess.key()?, name, &ct)?;
+        let pt = crypto::decrypt(sess.key(), name, &ct)?;
         file.set_value(name, &pt)?;
         file.apply_directive(name, false)?;
     }
@@ -697,118 +720,42 @@ fn cmd_decrypt(a: &BulkArgs, env: &EnvArgs, password_stdin: bool) -> Result<()> 
     Ok(())
 }
 
-// ── F6 passwd ────────────────────────────────────────────────────────────────
-
-fn cmd_passwd(a: &PasswdArgs, env: &EnvArgs) -> Result<()> {
-    let cfg = config::load()?;
-    let old_pw = match cfg.password.as_deref() {
-        Some(p) if !p.is_empty() => zeroize::Zeroizing::new(p.to_string()),
-        _ => session::prompt_password("current password: ")?,
-    };
-    let old_key = crypto::derive_key(&old_pw, &cfg.kdf.salt, cfg.params())?;
-
-    // Decrypt everything first and only change the password if all of it succeeded —
-    // a failure halfway through would leave a mixed state.
-    type Plaintexts = Vec<(String, zeroize::Zeroizing<String>)>;
-    let mut files: Vec<(EnvFile, Plaintexts)> = Vec::new();
-    for path in &env.files {
-        let file = EnvFile::load(path)?;
-        let mut items = Vec::new();
-        for v in file.vars().filter(|v| v.is_encrypted()) {
-            items.push((
-                v.name.clone(),
-                crypto::decrypt(&old_key, &v.name, &v.value)?,
-            ));
-        }
-        files.push((file, items));
-    }
-
-    let new_pw = session::prompt_new_password()?;
-    let new_salt = crypto::new_salt_b64()?;
-    let params = crypto::KdfParams::default();
-    let new_key = crypto::derive_key(&new_pw, &new_salt, params)?;
-
-    let mut count = 0;
-    for (file, items) in files.iter_mut() {
-        for (name, pt) in items.iter() {
-            file.set_value(name, &crypto::encrypt(&new_key, name, pt)?)?;
-            count += 1;
-        }
-        file.save()?;
-    }
-
-    let stored = (!a.no_store).then(|| new_pw.to_string());
-    let written = config::save(&config::Config::new(new_salt, params, stored))?;
-    note!(
-        "{} password changed; re-encrypted {count} item(s) across {} file(s) {}",
-        green("✓"),
-        env.files.len(),
-        dim(&written.display().to_string())
-    );
-    if env.files.is_empty() {
-        note!(
-            "{} no files given: old ciphertext in other .env files can no longer be decrypted",
-            yellow("⚠️")
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod cli_tests {
     use super::*;
 
     #[test]
-    fn direct_and_explicit_run_preserve_child_arguments() {
-        for argv in [
-            vec!["localenvx", "-e", "first.vars", "echo", "-e", "child"],
-            vec![
-                "localenvx",
-                "run",
-                "-e",
-                "first.vars",
-                "echo",
-                "-e",
-                "child",
-            ],
-            vec![
-                "localenvx",
-                "run",
-                "-e",
-                "first.vars",
-                "--",
-                "echo",
-                "-e",
-                "child",
-            ],
-        ] {
+    fn runtime_options_stop_at_child_command() {
+        for separator in [false, true] {
+            let mut argv = vec!["localenvx", "run", "-e", "first.vars"];
+            if separator {
+                argv.push("--");
+            }
+            argv.extend(["echo", "-e", "child", "--help"]);
             let cli = Cli::try_parse_from(argv).unwrap();
-            assert_eq!(cli.env.files, vec![PathBuf::from("first.vars")]);
-            let cmd = match cli.cmd.unwrap() {
-                Cmd::Run(args) => args.cmd,
-                Cmd::External(cmd) => cmd,
-                _ => panic!("expected run"),
+            let Some(Cmd::Run(entry)) = cli.cmd else {
+                panic!("expected run")
             };
-            assert_eq!(cmd, vec!["echo", "-e", "child"]);
+            assert_eq!(entry.env.files, vec![PathBuf::from("first.vars")]);
+            assert_eq!(entry.args.cmd, vec!["echo", "-e", "child", "--help"]);
         }
     }
 
     #[test]
-    fn builtin_names_and_boolean_quiet() {
-        assert!(matches!(
-            Cli::try_parse_from(["x", "get", "KEY"]).unwrap().cmd,
-            Some(Cmd::Get(_))
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["x", "--", "get", "KEY"]).unwrap().cmd,
-            Some(Cmd::External(_))
-        ));
-        assert_eq!(
-            Cli::try_parse_from(["x", "-q=false", "echo"])
-                .unwrap()
-                .quiet,
-            Some(false)
-        );
-        assert!(Cli::try_parse_from(["x", "-p", "KEY"]).is_err());
+    fn management_options_are_local_to_each_command() {
+        let cli = Cli::try_parse_from(["localenvx", "manage", "get", "-q=false", "KEY"]).unwrap();
+        let Some(Cmd::Manage(ManageCmd::Get(entry))) = cli.cmd else {
+            panic!("expected get")
+        };
+        assert_eq!(entry.credentials.quiet, Some(false));
+        for argv in [
+            vec!["localenvx", "manage", "-e", "file", "get", "KEY"],
+            vec!["localenvx", "manage", "init", "-v", "KEY=value"],
+            vec!["localenvx", "manage", "init", "--project"],
+            vec!["localenvx", "manage", "ls", "--no-expand"],
+            vec!["localenvx", "--skill", "manage", "status"],
+        ] {
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
     }
 }

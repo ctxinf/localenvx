@@ -1,58 +1,31 @@
-//! User and project credentials: salt, KDF parameters and optionally the password.
+//! User and project credentials: a random encryption key.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
-use crate::crypto::KdfParams;
+use crate::crypto::Key;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
-    pub kdf: Kdf,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Kdf {
-    pub algo: String,
-    pub salt: String,
-    pub m: u32,
-    pub t: u32,
-    pub p: u32,
+    pub key: String,
 }
 
 impl Drop for Config {
     fn drop(&mut self) {
-        if let Some(p) = self.password.as_mut() {
-            p.zeroize();
-        }
+        self.key.zeroize();
     }
 }
 
 impl Config {
-    pub fn new(salt: String, params: KdfParams, password: Option<String>) -> Self {
-        Self {
-            version: 1,
-            password,
-            kdf: Kdf {
-                algo: "argon2id".into(),
-                salt,
-                m: params.m,
-                t: params.t,
-                p: params.p,
-            },
-        }
-    }
-
-    pub fn params(&self) -> KdfParams {
-        KdfParams {
-            m: self.kdf.m,
-            t: self.kdf.t,
-            p: self.kdf.p,
-        }
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            version: 2,
+            key: Key::generate()?.to_base64(),
+        })
     }
 }
 
@@ -99,7 +72,7 @@ pub fn config_path() -> Result<PathBuf> {
     )
 }
 
-/// Resolve whole credential files; never mix a password with another file's salt.
+/// Resolve whole credential files from the nearest project or the user directory.
 fn resolve_path(user: &Path, cwd: &Path) -> Result<PathBuf> {
     for dir in cwd.ancestors() {
         let project = dir.join(".localenvx/config.toml");
@@ -114,24 +87,42 @@ pub fn load() -> Result<Config> {
     let path = config_path()?;
     if !path.exists() {
         bail!(
-            "not initialized yet: run `localenvx init` first (config: {})",
+            "not initialized yet: run `localenvx manage init` first (config: {})",
             path.display()
         );
     }
     check_perms(&path)?;
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let cfg: Config =
-        toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    if cfg.version != 1 {
+    let text = zeroize::Zeroizing::new(
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?,
+    );
+    // Inspect the version before parsing the new schema. Never print credential contents.
+    #[derive(Deserialize)]
+    struct Header {
+        version: u32,
+    }
+    let header: Header = toml::from_str(&text).map_err(|_| {
+        anyhow::anyhow!(
+            "failed to parse {}: invalid credential file",
+            path.display()
+        )
+    })?;
+    if header.version == 1 {
         bail!(
-            "unsupported config version {} (this binary only knows 1)",
-            cfg.version
+            "legacy password-based credential file: {}; use the previous release with the original credentials to decrypt existing files before initializing a new key file (no files changed)",
+            path.display()
         );
     }
-    if cfg.kdf.algo != "argon2id" {
-        bail!("unsupported kdf.algo: {}", cfg.kdf.algo);
+    if header.version != 2 {
+        bail!("unsupported config version {} (expected 2)", header.version);
     }
+    let cfg: Config = toml::from_str(&text).map_err(|_| {
+        anyhow::anyhow!(
+            "failed to parse {}: invalid credential file",
+            path.display()
+        )
+    })?;
+    Key::from_base64(&cfg.key)?;
     Ok(cfg)
 }
 
@@ -141,29 +132,32 @@ pub fn save(cfg: &Config) -> Result<PathBuf> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("failed to create {}", dir.display()))?;
     }
-    let text = toml::to_string_pretty(cfg)?;
+    let text = zeroize::Zeroizing::new(toml::to_string_pretty(cfg)?);
     write_private(&path, text.as_bytes())?;
     Ok(path)
 }
 
-/// Atomic write with mode 0600 (temp file then rename, so no half-written file is left).
+/// Create credentials without ever replacing an existing key file.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let tmp = path.with_extension("toml.tmp");
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut f = opts
-        .open(&tmp)
-        .with_context(|| format!("failed to write {}", tmp.display()))?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path).with_context(|| format!("failed to replace {}", path.display()))?;
+    let mut f = opts.open(path).with_context(|| {
+        format!(
+            "failed to create {} (existing credentials are never overwritten)",
+            path.display()
+        )
+    })?;
+    if let Err(error) = f.write_all(bytes).and_then(|_| f.sync_all()) {
+        drop(f);
+        let _ = std::fs::remove_file(path);
+        return Err(error).with_context(|| format!("failed to write {}", path.display()));
+    }
     Ok(())
 }
 

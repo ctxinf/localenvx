@@ -95,7 +95,7 @@ pub fn resolve_environment(
         if let Some(&i) = indices.get(name) {
             let entry = &mut loaded.entries[i];
             if used.insert(i) && entry.encrypted {
-                entry.value = crypto::decrypt(sess.key()?, name, raw)?;
+                entry.value = crypto::decrypt(sess.key(), name, raw)?;
             }
             Ok(entry.value.clone())
         } else {

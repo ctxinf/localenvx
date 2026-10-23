@@ -31,7 +31,7 @@ if [ "$uninstall" = 1 ]; then
   else
     echo "· $target does not exist, nothing to do"
   fi
-  echo "· config and password remain in ${XDG_CONFIG_HOME:-$HOME/.config}/localenvx/ (remove them manually if you want them gone)"
+  echo "· credential file remains in ${XDG_CONFIG_HOME:-$HOME/.config}/localenvx/ (remove them manually if you want them gone)"
   exit 0
 fi
 
@@ -63,5 +63,5 @@ case ":${PATH}:" in
 esac
 
 if [ ! -e "${LOCALENVX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/localenvx}/config.toml" ]; then
-  echo "· not initialized yet; next step: localenvx init"
+  echo "· not initialized yet; next step: localenvx manage init"
 fi
