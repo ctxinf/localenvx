@@ -502,7 +502,9 @@ impl Var {
         };
         let quote = if match quote {
             Quote::Single => self.value.contains('\''),
-            Quote::Double => self.value.contains('"'),
+            Quote::Double => {
+                self.value.contains('"') || self.value.contains("\\n") || self.value.contains("\\r")
+            }
             Quote::Backtick => self.value.contains('`'),
             Quote::None => false,
         } {
@@ -544,11 +546,7 @@ fn escape_double(v: &str) -> String {
 }
 
 fn unescape_double(v: &str) -> String {
-    v.replace(
-        "\\n", "
-",
-    )
-    .replace("\\r", "\r")
+    v.replace("\\n", "\n").replace("\\r", "\r")
 }
 
 /// `# @localenvx-mode:` only takes effect before the first variable; later occurrences are ignored.
@@ -607,6 +605,22 @@ mod tests {
 
     fn parse(s: &str) -> EnvFile {
         EnvFile::from_str_at(s, Path::new(".env")).unwrap()
+    }
+
+    #[test]
+    fn edits_preserve_literal_backslashes_and_switch_quotes_when_needed() {
+        for value in [
+            r"a\nb\r",
+            r"C:\new\root",
+            "a\"b'c",
+            "multi\nline",
+            "a\tb\\q",
+        ] {
+            let mut file = parse("A=old\n");
+            file.upsert("A", value, Some(false)).unwrap();
+            file.validate_render().unwrap();
+            assert_eq!(parse(&file.render()).get("A").unwrap().value, value);
+        }
     }
 
     #[test]
