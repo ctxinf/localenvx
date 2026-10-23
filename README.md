@@ -24,9 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/ctxinf/localenvx/main/scripts/insta
 # Build from source with Homebrew (requires the version tag).
 brew tap ctxinf/localenvx https://github.com/ctxinf/localenvx
 brew install ctxinf/localenvx/localenvx
-# Build from the Git repository with Cargo.
-cargo install --git https://github.com/ctxinf/localenvx --locked
+# Build from crates.io with Cargo (also available for other Rust targets).
+cargo install localenvx --locked
 ```
 
-For registry installation, `cargo install localenvx --locked` requires publication to crates.io.
 See [SKILL.md](SKILL.md) for configuration, precedence, encryption, and credential storage details.
