@@ -171,13 +171,13 @@ impl EnvFile {
     }
 
     pub fn get(&self, name: &str) -> Option<&Var> {
-        self.vars().find(|v| v.name == name)
+        self.vars().filter(|v| v.name == name).last()
     }
 
     fn index_of(&self, name: &str) -> Option<usize> {
         self.lines
             .iter()
-            .position(|l| matches!(l, Line::Var(v) if v.name == name))
+            .rposition(|l| matches!(l, Line::Var(v) if v.name == name))
     }
 
     /// A variable's effective encryption intent: an explicit directive wins, otherwise the file mode.
@@ -269,6 +269,21 @@ impl EnvFile {
 
     /// Insert or update a variable; `want_enc` of None means follow the file default (no directive written).
     pub fn upsert(&mut self, name: &str, value: &str, want_enc: Option<bool>) -> Result<()> {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        {
+            bail!("invalid variable name: {name}");
+        }
+        while self.vars().filter(|v| v.name == name).count() > 1 {
+            let first = self
+                .lines
+                .iter()
+                .position(|l| matches!(l, Line::Var(v) if v.name == name))
+                .unwrap();
+            self.remove_at(first)?;
+        }
         if self.index_of(name).is_none() {
             let quote = if needs_quote(value) {
                 Quote::Double
@@ -343,11 +358,18 @@ impl EnvFile {
         Ok(())
     }
 
-    /// Remove the variable line, plus a directive-only comment line directly above it.
+    /// Remove every occurrence, including its directive-only comment.
     pub fn remove(&mut self, name: &str) -> Result<()> {
-        let idx = self
-            .index_of(name)
-            .with_context(|| format!("{}: no variable named {name}", self.path.display()))?;
+        if self.index_of(name).is_none() {
+            bail!("{}: no variable named {name}", self.path.display());
+        }
+        while let Some(idx) = self.index_of(name) {
+            self.remove_at(idx)?;
+        }
+        Ok(())
+    }
+
+    fn remove_at(&mut self, idx: usize) -> Result<()> {
         let directive_line = self.scan_directive(idx)?.and_then(|(d, i)| {
             let Line::Raw(raw) = &self.lines[i] else {
                 return None;
@@ -611,6 +633,21 @@ mod tests {
 
     fn parse(s: &str) -> EnvFile {
         EnvFile::from_str_at(s, Path::new(".env")).unwrap()
+    }
+
+    #[test]
+    fn duplicate_keys_use_last_and_edits_remove_stale_entries() {
+        let mut f = parse("# @ENC\nA=first\n# keep\n# @PLAIN\nA=last\n");
+        assert_eq!(f.get("A").unwrap().value, "last");
+        assert!(!f.should_encrypt("A"));
+        f.upsert("A", "new", None).unwrap();
+        assert_eq!(f.vars().count(), 1);
+        assert_eq!(f.get("A").unwrap().value, "new");
+        assert!(f.render().contains("# keep"));
+        let mut f = parse("A=first\nA=last\nB=stay\n");
+        f.remove("A").unwrap();
+        assert!(f.get("A").is_none());
+        assert!(f.get("B").is_some());
     }
 
     #[test]
