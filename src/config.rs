@@ -62,12 +62,23 @@ pub fn config_dir() -> Result<PathBuf> {
     }
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => {
-            let home = std::env::var_os("HOME").context("$HOME is not set")?;
-            PathBuf::from(home).join(".config")
-        }
+        _ => default_config_base()?,
     };
     Ok(base.join("localenvx"))
+}
+
+fn default_config_base() -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let appdata =
+            std::env::var_os("APPDATA").context("APPDATA is not set; set LOCALENVX_CONFIG_DIR")?;
+        Ok(PathBuf::from(appdata))
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var_os("HOME").context("HOME is not set; set LOCALENVX_CONFIG_DIR")?;
+        Ok(PathBuf::from(home).join(".config"))
+    }
 }
 
 thread_local! {

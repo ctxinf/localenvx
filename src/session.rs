@@ -70,12 +70,8 @@ pub fn read_password_stdin() -> Result<Zeroizing<String>> {
 }
 
 pub fn is_tty() -> bool {
-    #[cfg(unix)]
-    unsafe {
-        libc::isatty(libc::STDIN_FILENO) == 1
-    }
-    #[cfg(not(unix))]
-    true
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 pub fn prompt_password(prompt: &str) -> Result<Zeroizing<String>> {

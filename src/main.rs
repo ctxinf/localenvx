@@ -53,6 +53,8 @@ struct Cli {
 enum Cmd {
     /// Show commands and options (equivalent to --help)
     Help,
+    /// Print the bundled usage guide for people and agents
+    Skill,
     /// Show credential and environment-file status without revealing values
     Status,
     #[command(external_subcommand)]
@@ -224,6 +226,10 @@ fn dispatch(cli: &Cli) -> Result<()> {
             .print()?;
         return Ok(());
     }
+    if matches!(cli.cmd, Some(Cmd::Skill)) {
+        print!("{}", include_str!("../SKILL.md"));
+        return Ok(());
+    }
     if cli.env.debug {
         println!(
             "{}",
@@ -248,7 +254,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
             cmd_run(&RunArgs { cmd: cmd.clone() }, &cli.env, cli.password_stdin)
         }
         None => bail!("missing command; use localenvx --help or localenvx status"),
-        Some(Cmd::Help) => unreachable!("help is handled before configuration"),
+        Some(Cmd::Help | Cmd::Skill) => unreachable!("help is handled before configuration"),
         Some(Cmd::Status) => {
             print!(
                 "{}",

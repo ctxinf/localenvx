@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.85"
 description = "Encrypted environment-variable manager for local development: no plaintext secrets on disk"
 license = "MIT"
+repository = "https://github.com/ctxinf/localenvx"
+readme = "README.md"
+include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "SKILL.md", "LICENSE", "tests/**"]
 
 [dependencies]
 anyhow = "1"

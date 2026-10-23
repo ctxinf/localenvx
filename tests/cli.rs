@@ -688,3 +688,32 @@ fn project_initialization_rejects_existing_user_encryption_before_password_promp
     }
     success(&p.run(&["-e", path(&file), "get", "SECRET"]));
 }
+
+#[test]
+fn bundled_guide_needs_no_credentials_or_env_files() {
+    let p = Project::new();
+    std::fs::remove_file(p.0.join("config.toml")).unwrap();
+    let output = p.run(&["skill"]);
+    success(&output);
+    assert_eq!(text(&output), include_str!("../SKILL.md"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn native_child_runs_and_exit_codes_pass_through_on_every_platform() {
+    let p = Project::new();
+    let file = p.fixture("native", "K=synthetic\n");
+    let executable = env!("CARGO_BIN_EXE_localenvx");
+    let output = p.run(&["-e", path(&file), "run", "--", executable, "--version"]);
+    success(&output);
+    assert!(text(&output).starts_with("localenvx "));
+    let output = p.run(&[
+        "-e",
+        path(&file),
+        "run",
+        "--",
+        executable,
+        "--invalid-option",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+}
